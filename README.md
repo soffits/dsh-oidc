@@ -86,7 +86,7 @@ At least one allow category is mandatory unless `allowAnyUser` is `true`; it can
 DSH treats every signed-in browser as the same owner, so a model has no way to tell two people apart. With `senderContext: true` each prompt typed into the Web UI reaches the model with a line in front of it naming the person whose OIDC session sent it:
 
 ```text
-[Web message from lia (oidc sub 0b3c9f4e-...)]
+[Web message from alice (oidc sub 0b3c9f4e-...)]
 ```
 
 The name is `preferred_username`, then `name`, then `email`, with anything that could close or fake the line removed; the `sub` is the stable part to key on. The line is a separate context message (source kind `oidc-sender`, a `notice` with `issuer`, `subject` and `label`), committed to the session log right before the prompt it describes, and the Web UI shows the line as a notice row. The prompt's text is unchanged; its source also records the sender as `principal`, the field DSH uses for the caller behind a user message, so scripts can read who wrote a prompt without parsing the line:
@@ -96,7 +96,7 @@ The name is `preferred_username`, then `name`, then `email`, with anything that 
   "kind": "oidc-user",
   "channel": "web",
   "id": "<sub>",
-  "name": "lia",
+  "name": "alice",
   "issuer": "https://id.example"
 }
 ```
