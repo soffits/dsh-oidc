@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0-alpha.6
+
+- With `senderContext`, a Web prompt's source also records its sender as `principal` (`{ kind: 'oidc-user', channel: 'web', id: <sub>, name, issuer }`), so session readers get the sender as data instead of parsing the notice line. The notice and the prompt's text are unchanged.
+
 ## 0.3.0-alpha.5
 
 - Add `persistSessions` (`DSH_OIDC_PERSIST_SESSIONS`), off by default: sessions are also kept in DSH's storage (`storages/dsh_oidc_sessions.json`, mode 0600, keyed by the SHA-256 of the cookie value), so a DSH restart no longer signs everyone out. Restored sessions keep the configured absolute and idle limits, logout deletes the record before answering, and a changed issuer, client or allow policy drops every stored session.

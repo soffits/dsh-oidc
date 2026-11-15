@@ -19,7 +19,9 @@ import type { Principal } from './policy.js'
  *    enters an inbox inside an open scope is remembered by message id.
  * 3. `agent/pre-step` puts a one-line sender notice in front of each
  *    remembered message when it enters a step, so the notice is committed to
- *    the session log next to the message it describes.
+ *    the session log next to the message it describes, and records the sender
+ *    on the prompt itself as `source.principal`, DSH's field for the caller
+ *    behind a user message, so readers need not parse the notice text.
  *
  * A scope closes when its request settles and after its first claim. Work the
  * request merely started (an agent turn, a subagent, a timer) inherits the
@@ -88,6 +90,26 @@ export interface SenderEvents {
   ): unknown
 }
 
+/**
+ * The verified sender recorded on a Web prompt's `source.principal`.
+ *
+ * DSH writes `principal` on a prompt's source only for callers other than the
+ * owner, and every OIDC browser is admitted as the owner, so the field is free
+ * for this plugin to fill. The value is attribution only: authorization reads
+ * the connection's principal, never a message source. It carries no
+ * credential, so it is safe in the session log. `channel` and `id` are the
+ * fields every sender-recording plugin shares; `issuer` scopes the `sub`.
+ */
+export interface OidcUserPrincipal {
+  readonly kind: 'oidc-user'
+  readonly channel: 'web'
+  /** OIDC `sub`, unique within `issuer`. */
+  readonly id: string
+  /** Display name: preferred_username, then name, then email. */
+  readonly name: string
+  readonly issuer: string
+}
+
 /** What the notice says about one sender. */
 export interface Sender {
   readonly issuer: string
@@ -149,6 +171,25 @@ function deepFreeze<T>(value: T): T {
     Object.freeze(value)
   }
   return value
+}
+
+/** The principal a Web prompt from this sender records. */
+export function senderPrincipal(sender: Sender): OidcUserPrincipal {
+  return {
+    kind: 'oidc-user',
+    channel: 'web',
+    id: sender.subject,
+    name: sender.label,
+    issuer: sender.issuer,
+  }
+}
+
+/** The prompt with its sender recorded on `source.principal`; other fields are kept as they are. */
+export function withSenderPrincipal(message: SenderMessage, sender: Sender): SenderMessage {
+  return deepFreeze({
+    ...message,
+    source: { ...message.source, principal: senderPrincipal(sender) },
+  })
 }
 
 /** The notice message that goes in front of the sender's prompt. */
@@ -220,9 +261,10 @@ export function applySenderContext(
       const sender = pending.get(message.id)
       if (sender !== undefined) {
         pending.delete(message.id)
-        messages.push(senderNotice(sender))
+        messages.push(senderNotice(sender), withSenderPrincipal(message, sender))
+      } else {
+        messages.push(message)
       }
-      messages.push(message)
     }
     return { ...decision, messages }
   })

@@ -11,6 +11,7 @@ import {
   isWebPrompt,
   senderNotice,
   senderOf,
+  senderPrincipal,
   senderTag,
   type SenderMessage,
   type SenderStepDecision,
@@ -127,6 +128,18 @@ describe('sender tag', () => {
     expect(textOf(long)).toContain('x'.repeat(200))
   })
 
+  it('records the sender as a credential-free principal', () => {
+    expect(
+      senderPrincipal(senderOf({ ...LIVIA, email: 'l@example.test', groups: ['admins'] })),
+    ).toEqual({
+      kind: 'oidc-user',
+      channel: 'web',
+      id: LIVIA.subject,
+      name: 'lia',
+      issuer: ISSUER,
+    })
+  })
+
   it('recognizes only the session controller user-rpc source as a Web prompt', () => {
     expect(isWebPrompt(message({ kind: 'user', rpcId: 'r' }))).toBe(true)
     expect(isWebPrompt(message({ kind: 'user' }))).toBe(false)
@@ -148,7 +161,22 @@ describe('sender context listeners', () => {
     expect(messages).toHaveLength(3)
     expect(messages[0]).toBe(other)
     expect(textOf(messages[1])).toBe(senderTag(senderOf(LIVIA)))
-    expect(messages[2]).toBe(prompt)
+    // The prompt keeps its id, content and source, and records its sender.
+    const tagged = messages[2]
+    expect(tagged).toEqual({
+      ...prompt,
+      source: {
+        ...prompt.source,
+        principal: {
+          kind: 'oidc-user',
+          channel: 'web',
+          id: LIVIA.subject,
+          name: 'lia',
+          issuer: ISSUER,
+        },
+      },
+    })
+    expect(Object.isFrozen(tagged?.source)).toBe(true)
     // Tagged once: a later step that still lists the message adds nothing.
     expect(entered(await step(ctx, [prompt]))).toEqual([prompt])
   })
@@ -220,7 +248,7 @@ describe('sender context listeners', () => {
     await later
     const messages = entered(await step(ctx, [context, prompt, second, afterwards]))
     expect(messages.map(textOf).filter((text) => text !== '')).toEqual([senderTag(senderOf(LIVIA))])
-    expect(messages.indexOf(prompt)).toBe(2)
+    expect(messages.findIndex((entry) => entry.id === prompt.id)).toBe(2)
   })
 
   it('closes the scope when the request fails, and forgets discarded prompts', async () => {
@@ -338,6 +366,8 @@ describe('with the real DSH Connection and web server', () => {
     await started
     const messages = entered(await step(ctx, prompts))
     expect(messages.map(textOf)).toEqual([senderTag(senderOf(SELINA)), '', '', '', ''])
-    expect(messages[1]).toBe(prompts[0])
+    expect(messages[1]?.id).toBe(prompts[0]?.id)
+    expect(messages[1]?.source.principal).toEqual(senderPrincipal(senderOf(SELINA)))
+    expect(messages.slice(2).every((entry) => entry.source.principal === undefined)).toBe(true)
   })
 })
