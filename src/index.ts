@@ -111,5 +111,10 @@ async function serve(
   ]
   for (const route of routes)
     ctx.effect(() => ctx.webServer.register(route), `dsh-oidc: ${route.path}`)
-  if (config.senderContext) applySenderContext(ctx, (req) => admission.principalOf(req))
+  if (config.senderContext)
+    applySenderContext(
+      ctx,
+      (req) => admission.principalOf(req),
+      config.timeZone === undefined ? {} : { timeZone: config.timeZone },
+    )
 }

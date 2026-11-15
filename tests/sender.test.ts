@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import * as connectionPlugin from '@deepseek-ai/dsh-client-connection'
 import { WebServer } from '@deepseek-ai/dsh-host-webserver'
+import { formatMoment } from '../src/clock.js'
 import type { Principal } from '../src/policy.js'
 import {
   MAX_PENDING_SENDERS,
@@ -49,6 +50,11 @@ function fakeRequest(cookie?: string): IncomingMessage {
   return { headers: cookie === undefined ? {} : { cookie } } as IncomingMessage
 }
 
+/** The clock the listeners read in these tests, and how their notices show it. */
+const NOW = Date.UTC(2026, 2, 2, 8, 41, 12)
+const SENT = 'Mon 2026-03-02 08:41 UTC+00:00'
+const CLOCK = { timeZone: 'UTC', now: () => NOW }
+
 const SESSIONS: Record<string, Principal> = { 'token-alice': ALICE, 'token-bob': BOB }
 const principalOf = (req: IncomingMessage): Principal | undefined => {
   const value = readCookie(req.headers.cookie, SESSION_COOKIE)
@@ -57,7 +63,7 @@ const principalOf = (req: IncomingMessage): Principal | undefined => {
 
 function host(): Context {
   const ctx = new Context()
-  applySenderContext(ctx, principalOf)
+  applySenderContext(ctx, principalOf, CLOCK)
   return ctx
 }
 
@@ -140,6 +146,25 @@ describe('sender tag', () => {
     })
   })
 
+  it('says when the prompt was sent, after the sender', () => {
+    expect(senderTag(senderOf(ALICE), SENT)).toBe(
+      `[Web message from alice (oidc sub ${ALICE.subject}), sent Mon 2026-03-02 08:41 UTC+00:00]`,
+    )
+    expect(senderTag(senderOf(ALICE), ' ')).toBe(senderTag(senderOf(ALICE)))
+    expect(textOf(senderNotice(senderOf(BOB), SENT))).toBe(
+      `[Web message from 小林 (oidc sub ${BOB.subject}), sent ${SENT}]`,
+    )
+  })
+
+  it('formats a moment with weekday, date, local time and UTC offset', () => {
+    expect(formatMoment(NOW, 'Europe/Berlin')).toBe('Mon 2026-03-02 09:41 UTC+01:00')
+    expect(formatMoment(NOW, 'Asia/Kolkata')).toBe('Mon 2026-03-02 14:11 UTC+05:30')
+    expect(formatMoment(NOW, 'America/Los_Angeles')).toBe('Mon 2026-03-02 00:41 UTC-08:00')
+    expect(formatMoment(Date.UTC(2026, 6, 1, 10, 0), 'Europe/Berlin')).toBe(
+      'Wed 2026-07-01 12:00 UTC+02:00',
+    )
+  })
+
   it('recognizes only the session controller user-rpc source as a Web prompt', () => {
     expect(isWebPrompt(message({ kind: 'user', rpcId: 'r' }))).toBe(true)
     expect(isWebPrompt(message({ kind: 'user' }))).toBe(false)
@@ -160,7 +185,7 @@ describe('sender context listeners', () => {
     const messages = entered(await step(ctx, [other, prompt]))
     expect(messages).toHaveLength(3)
     expect(messages[0]).toBe(other)
-    expect(textOf(messages[1])).toBe(senderTag(senderOf(ALICE)))
+    expect(textOf(messages[1])).toBe(senderTag(senderOf(ALICE), SENT))
     // The prompt keeps its id, content and source, and records its sender.
     const tagged = messages[2]
     expect(tagged).toEqual({
@@ -181,6 +206,32 @@ describe('sender context listeners', () => {
     expect(entered(await step(ctx, [prompt]))).toEqual([prompt])
   })
 
+  it('takes the send time when the prompt is admitted, in the browser zone unless one is set', async () => {
+    let now = NOW
+    const clock = () => now
+    const browser = new Context()
+    applySenderContext(browser, principalOf, { now: clock })
+    const prompt = message({ kind: 'user', rpcId: 'rpc-zone', clientTimeZone: 'Asia/Tokyo' })
+    await apiRequest(browser, `${SESSION_COOKIE}=token-alice`, async () => {
+      browser.emit('agent/inbox/inserted', { message: prompt })
+    })
+    // The prompt waits in the inbox for a while (a running turn) before its step.
+    now += 20 * 60_000
+    expect(textOf(entered(await step(browser, [prompt]))[0])).toBe(
+      `[Web message from alice (oidc sub ${ALICE.subject}), sent Mon 2026-03-02 17:41 UTC+09:00]`,
+    )
+    // A configured zone wins over the browser's.
+    const fixed = new Context()
+    applySenderContext(fixed, principalOf, { timeZone: 'Europe/Berlin', now: clock })
+    const other = message({ kind: 'user', rpcId: 'rpc-zone-2', clientTimeZone: 'Asia/Tokyo' })
+    await apiRequest(fixed, `${SESSION_COOKIE}=token-alice`, async () => {
+      fixed.emit('agent/inbox/inserted', { message: other })
+    })
+    expect(textOf(entered(await step(fixed, [other]))[0])).toMatch(
+      /, sent Mon 2026-03-02 10:01 UTC\+01:00\]$/u,
+    )
+  })
+
   it('keeps two people apart when their requests interleave', async () => {
     const ctx = host()
     const fromAlice = webPrompt()
@@ -199,9 +250,9 @@ describe('sender context listeners', () => {
     await alice
     const messages = entered(await step(ctx, [fromAlice, fromBob]))
     expect(messages.map(textOf)).toEqual([
-      senderTag(senderOf(ALICE)),
+      senderTag(senderOf(ALICE), SENT),
       '',
-      senderTag(senderOf(BOB)),
+      senderTag(senderOf(BOB), SENT),
       '',
     ])
   })
@@ -247,7 +298,9 @@ describe('sender context listeners', () => {
     })
     await later
     const messages = entered(await step(ctx, [context, prompt, second, afterwards]))
-    expect(messages.map(textOf).filter((text) => text !== '')).toEqual([senderTag(senderOf(ALICE))])
+    expect(messages.map(textOf).filter((text) => text !== '')).toEqual([
+      senderTag(senderOf(ALICE), SENT),
+    ])
     expect(messages.findIndex((entry) => entry.id === prompt.id)).toBe(2)
   })
 
@@ -313,7 +366,7 @@ describe('with the real DSH Connection and web server', () => {
     })
     await root.plugin(WebServer, { host: '127.0.0.1', port: 0 })
     await root.plugin(connectionPlugin, {})
-    applySenderContext(root, principalOf)
+    applySenderContext(root, principalOf, CLOCK)
     const ctx = root
     const prompts: SenderMessage[] = []
     let started: Promise<void> = Promise.resolve()
@@ -365,7 +418,7 @@ describe('with the real DSH Connection and web server', () => {
     expect((await send()).status).toBe(200)
     await started
     const messages = entered(await step(ctx, prompts))
-    expect(messages.map(textOf)).toEqual([senderTag(senderOf(BOB)), '', '', '', ''])
+    expect(messages.map(textOf)).toEqual([senderTag(senderOf(BOB), SENT), '', '', '', ''])
     expect(messages[1]?.id).toBe(prompts[0]?.id)
     expect(messages[1]?.source.principal).toEqual(senderPrincipal(senderOf(BOB)))
     expect(messages.slice(2).every((entry) => entry.source.principal === undefined)).toBe(true)

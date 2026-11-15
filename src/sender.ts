@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { formatMoment, knownTimeZone, processTimeZone } from './clock.js'
 import type { Principal } from './policy.js'
 
 /**
@@ -16,9 +17,11 @@ import type { Principal } from './policy.js'
  *    sends besides the session cookie is read.
  * 2. `agent/inbox/inserted` fires synchronously while the prompt RPC admits
  *    its message. A Web prompt message (source `user` with an `rpcId`) that
- *    enters an inbox inside an open scope is remembered by message id.
- * 3. `agent/pre-step` puts a one-line sender notice in front of each
- *    remembered message when it enters a step, so the notice is committed to
+ *    enters an inbox inside an open scope is remembered by message id, with
+ *    the time it was sent: a prompt sent during a turn may wait in the inbox
+ *    until the turn's next step.
+ * 3. `agent/pre-step` puts a one-line sender notice (who, and when it was
+ *    sent) in front of each remembered message when it enters a step, so the notice is committed to
  *    the session log next to the message it describes, and records the sender
  *    on the prompt itself as `source.principal`, DSH's field for the caller
  *    behind a user message, so readers need not parse the notice text.
@@ -117,6 +120,23 @@ export interface Sender {
   readonly label: string
 }
 
+/** A remembered prompt: who sent it and when, as the notice says it. */
+interface PendingPrompt {
+  readonly sender: Sender
+  readonly sentAt: string
+}
+
+/** Options for {@link applySenderContext}. */
+export interface SenderContextOptions {
+  /**
+   * Zone send times are shown in. Without one, the zone the browser reported
+   * for the prompt, else the zone of the DSH process.
+   */
+  readonly timeZone?: string
+  /** The clock, for tests. */
+  readonly now?: () => number
+}
+
 interface RequestScope {
   readonly sender: Sender
   open: boolean
@@ -155,9 +175,13 @@ export function senderOf(principal: Principal): Sender {
   }
 }
 
-/** The line the model reads, shaped like the Telegram bot's sender line. */
-export function senderTag(sender: Sender): string {
-  return `[Web message from ${sender.label} (oidc sub ${sender.subject})]`
+/**
+ * The line the model reads, shaped like the Telegram bot's sender line.
+ * @param sentAt - when the prompt was sent, as text (see `formatMoment`).
+ */
+export function senderTag(sender: Sender, sentAt?: string): string {
+  const time = sentAt === undefined || sentAt.trim() === '' ? '' : `, sent ${sentAt.trim()}`
+  return `[Web message from ${sender.label} (oidc sub ${sender.subject})${time}]`
 }
 
 /** A prompt typed into the Web UI: the session controller's user-rpc source (inbox messages are all user-role). */
@@ -193,8 +217,8 @@ export function withSenderPrincipal(message: SenderMessage, sender: Sender): Sen
 }
 
 /** The notice message that goes in front of the sender's prompt. */
-export function senderNotice(sender: Sender): SenderMessage {
-  const text = senderTag(sender)
+export function senderNotice(sender: Sender, sentAt?: string): SenderMessage {
+  const text = senderTag(sender, sentAt)
   const summary =
     text.length > MAX_SUMMARY_LENGTH ? `${text.slice(0, MAX_SUMMARY_LENGTH - 1)}…` : text
   const content: readonly TextBlock[] = [{ type: 'text', text }]
@@ -220,9 +244,11 @@ export function senderNotice(sender: Sender): SenderMessage {
 export function applySenderContext(
   events: SenderEvents,
   principalOf: (request: IncomingMessage) => Principal | undefined,
+  options: SenderContextOptions = {},
 ): void {
   const requests = new AsyncLocalStorage<RequestScope>()
-  const pending = new Map<string, Sender>()
+  const pending = new Map<string, PendingPrompt>()
+  const now = options.now ?? Date.now
 
   events.on('connection/request', async (request, _response, next) => {
     const principal = principalOf(request)
@@ -241,7 +267,9 @@ export function applySenderContext(
     // One prompt per request: whatever this request goes on to start is not its prompt.
     scope.open = false
     pending.delete(message.id)
-    pending.set(message.id, scope.sender)
+    const timeZone =
+      options.timeZone ?? knownTimeZone(message.source.clientTimeZone) ?? processTimeZone()
+    pending.set(message.id, { sender: scope.sender, sentAt: formatMoment(now(), timeZone) })
     if (pending.size > MAX_PENDING_SENDERS) {
       const oldest = pending.keys().next().value
       if (oldest !== undefined) pending.delete(oldest)
@@ -258,10 +286,13 @@ export function applySenderContext(
     if (!decision.messages.some((message) => pending.has(message.id))) return decision
     const messages: SenderMessage[] = []
     for (const message of decision.messages) {
-      const sender = pending.get(message.id)
-      if (sender !== undefined) {
+      const prompt = pending.get(message.id)
+      if (prompt !== undefined) {
         pending.delete(message.id)
-        messages.push(senderNotice(sender), withSenderPrincipal(message, sender))
+        messages.push(
+          senderNotice(prompt.sender, prompt.sentAt),
+          withSenderPrincipal(message, prompt.sender),
+        )
       } else {
         messages.push(message)
       }

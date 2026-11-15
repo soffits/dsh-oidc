@@ -100,6 +100,22 @@ describe('DSH_OIDC_* environment precedence', () => {
     expect(() => readEnvironment({ DSH_OIDC_SENDER_CONTEXT: '1' }, {})).toThrow(/true or false/u)
   })
 
+  it('reads DSH_OIDC_TIME_ZONE and refuses a zone the runtime does not know', () => {
+    const layer = readEnvironment({ ...env, DSH_OIDC_TIME_ZONE: 'Europe/Berlin' }, row)
+    expect(layer.fields).toContain('timeZone')
+    expect(resolveConfig(applyEnvironment(row, layer)).timeZone).toBe('Europe/Berlin')
+    expect(resolveConfig(applyEnvironment(row, readEnvironment(env, row))).timeZone).toBeUndefined()
+    expect(
+      resolveConfig({ ...applyEnvironment(row, readEnvironment(env, row)), timeZone: ' ' })
+        .timeZone,
+    ).toBeUndefined()
+    expect(() =>
+      resolveConfig(
+        applyEnvironment(row, readEnvironment({ ...env, DSH_OIDC_TIME_ZONE: 'Mars/Base' }, row)),
+      ),
+    ).toThrow(/not a known IANA time zone/u)
+  })
+
   it('reads DSH_OIDC_PERSIST_SESSIONS as a strict boolean and keeps sessions in memory by default', () => {
     const layer = readEnvironment({ ...env, DSH_OIDC_PERSIST_SESSIONS: 'true' }, row)
     expect(layer.fields).toContain('persistSessions')
