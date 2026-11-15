@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The `senderContext` line now says when the prompt was sent: `[Web message from alice (oidc sub ...), sent Mon 2026-03-02 09:41 UTC+01:00]`, taken when DSH admits the prompt, so a model can tell how much time passed between messages. The new `timeZone` (`DSH_OIDC_TIME_ZONE`) sets the zone; without it the browser's reported zone is used, else the process zone. An unknown zone stops the plugin at startup.
+
 ## 0.3.0-alpha.6
 
 - With `senderContext`, a Web prompt's source also records its sender as `principal` (`{ kind: 'oidc-user', channel: 'web', id: <sub>, name, issuer }`), so session readers get the sender as data instead of parsing the notice line. The notice and the prompt's text are unchanged.
