@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0-alpha.8
+
+- `senderContext` now only records metadata: the sender on the prompt's `source.principal` and the time DSH admitted it on `source.envelope.sentAt` (Unix ms). The plugin no longer adds its own `oidc-sender` notice line; install [dsh-message-context](https://github.com/soffits/dsh-message-context) to show the model who wrote each message, the same way for every channel. `timeZone` (`DSH_OIDC_TIME_ZONE`) is gone, since the renderer formats times.
+
 ## 0.3.0-alpha.7
 
 - The `senderContext` line now says when the prompt was sent: `[Web message from alice (oidc sub ...), sent Mon 2026-03-02 09:41 UTC+01:00]`, taken when DSH admits the prompt, so a model can tell how much time passed between messages. The new `timeZone` (`DSH_OIDC_TIME_ZONE`) sets the zone; without it the browser's reported zone is used, else the process zone. An unknown zone stops the plugin at startup.

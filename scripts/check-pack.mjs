@@ -16,7 +16,6 @@ const expectedFiles = [
   'dist/admission.d.ts',
   'dist/compatibility.d.ts',
   'dist/client.js',
-  'dist/clock.d.ts',
   'dist/client/AccountMenu.d.ts',
   'dist/client/index.d.ts',
   'dist/client/locales.d.ts',

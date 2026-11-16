@@ -1,7 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { formatMoment, knownTimeZone, processTimeZone } from './clock.js'
 import type { Principal } from './policy.js'
 
 /**
@@ -20,11 +18,12 @@ import type { Principal } from './policy.js'
  *    enters an inbox inside an open scope is remembered by message id, with
  *    the time it was sent: a prompt sent during a turn may wait in the inbox
  *    until the turn's next step.
- * 3. `agent/pre-step` puts a one-line sender notice (who, and when it was
- *    sent) in front of each remembered message when it enters a step, so the notice is committed to
- *    the session log next to the message it describes, and records the sender
- *    on the prompt itself as `source.principal`, DSH's field for the caller
- *    behind a user message, so readers need not parse the notice text.
+ * 3. `agent/pre-step` records the sender on each remembered message as it
+ *    enters a step, as `source.principal` (DSH's field for the caller behind a
+ *    user message), and when it was sent as `source.envelope.sentAt`, so both
+ *    are committed to the session log with the message. The prompt's text is
+ *    never changed; a renderer such as dsh-message-context shows the model
+ *    who wrote it.
  *
  * A scope closes when its request settles and after its first claim. Work the
  * request merely started (an agent turn, a subagent, a timer) inherits the
@@ -32,19 +31,10 @@ import type { Principal } from './policy.js'
  * agent-to-agent messages never get a Web sender.
  */
 
-/** Source kind of the notice message this plugin adds. */
-export const SENDER_SOURCE_KIND = 'oidc-sender'
-
 const MAX_LABEL_LENGTH = 64
 const MAX_SUBJECT_LENGTH = 255
-const MAX_SUMMARY_LENGTH = 120
 /** Remembered prompts waiting for their step; the oldest go first past this. */
 export const MAX_PENDING_SENDERS = 1_024
-
-interface TextBlock {
-  readonly type: 'text'
-  readonly text: string
-}
 
 /** The parts of a DSH message this plugin reads or writes. */
 export interface SenderMessage {
@@ -120,19 +110,14 @@ export interface Sender {
   readonly label: string
 }
 
-/** A remembered prompt: who sent it and when, as the notice says it. */
+/** A remembered prompt: who sent it and when (Unix milliseconds). */
 interface PendingPrompt {
   readonly sender: Sender
-  readonly sentAt: string
+  readonly sentAt: number
 }
 
 /** Options for {@link applySenderContext}. */
 export interface SenderContextOptions {
-  /**
-   * Zone send times are shown in. Without one, the zone the browser reported
-   * for the prompt, else the zone of the DSH process.
-   */
-  readonly timeZone?: string
   /** The clock, for tests. */
   readonly now?: () => number
 }
@@ -175,15 +160,6 @@ export function senderOf(principal: Principal): Sender {
   }
 }
 
-/**
- * The line the model reads, shaped like the Telegram bot's sender line.
- * @param sentAt - when the prompt was sent, as text (see `formatMoment`).
- */
-export function senderTag(sender: Sender, sentAt?: string): string {
-  const time = sentAt === undefined || sentAt.trim() === '' ? '' : `, sent ${sentAt.trim()}`
-  return `[Web message from ${sender.label} (oidc sub ${sender.subject})${time}]`
-}
-
 /** A prompt typed into the Web UI: the session controller's user-rpc source (inbox messages are all user-role). */
 export function isWebPrompt(message: SenderMessage): boolean {
   return message.source.kind === 'user' && typeof message.source.rpcId === 'string'
@@ -208,32 +184,20 @@ export function senderPrincipal(sender: Sender): OidcUserPrincipal {
   }
 }
 
-/** The prompt with its sender recorded on `source.principal`; other fields are kept as they are. */
-export function withSenderPrincipal(message: SenderMessage, sender: Sender): SenderMessage {
+/**
+ * The prompt with its sender on `source.principal` and its send time on
+ * `source.envelope.sentAt`, the metadata dsh-message-context renders. Fields
+ * the prompt already has are kept.
+ */
+export function withSenderMetadata(
+  message: SenderMessage,
+  sender: Sender,
+  sentAt: number,
+): SenderMessage {
+  const envelope = message.source.envelope === undefined ? { envelope: { sentAt } } : {}
   return deepFreeze({
     ...message,
-    source: { ...message.source, principal: senderPrincipal(sender) },
-  })
-}
-
-/** The notice message that goes in front of the sender's prompt. */
-export function senderNotice(sender: Sender, sentAt?: string): SenderMessage {
-  const text = senderTag(sender, sentAt)
-  const summary =
-    text.length > MAX_SUMMARY_LENGTH ? `${text.slice(0, MAX_SUMMARY_LENGTH - 1)}…` : text
-  const content: readonly TextBlock[] = [{ type: 'text', text }]
-  return deepFreeze({
-    id: randomUUID(),
-    role: 'user' as const,
-    content,
-    source: {
-      kind: SENDER_SOURCE_KIND,
-      form: 'notice',
-      summary,
-      issuer: sender.issuer,
-      subject: sender.subject,
-      label: sender.label,
-    },
+    source: { ...message.source, principal: senderPrincipal(sender), ...envelope },
   })
 }
 
@@ -267,9 +231,7 @@ export function applySenderContext(
     // One prompt per request: whatever this request goes on to start is not its prompt.
     scope.open = false
     pending.delete(message.id)
-    const timeZone =
-      options.timeZone ?? knownTimeZone(message.source.clientTimeZone) ?? processTimeZone()
-    pending.set(message.id, { sender: scope.sender, sentAt: formatMoment(now(), timeZone) })
+    pending.set(message.id, { sender: scope.sender, sentAt: now() })
     if (pending.size > MAX_PENDING_SENDERS) {
       const oldest = pending.keys().next().value
       if (oldest !== undefined) pending.delete(oldest)
@@ -289,10 +251,7 @@ export function applySenderContext(
       const prompt = pending.get(message.id)
       if (prompt !== undefined) {
         pending.delete(message.id)
-        messages.push(
-          senderNotice(prompt.sender, prompt.sentAt),
-          withSenderPrincipal(message, prompt.sender),
-        )
+        messages.push(withSenderMetadata(message, prompt.sender, prompt.sentAt))
       } else {
         messages.push(message)
       }
