@@ -55,7 +55,6 @@ Values for the site are supplied by the environment of the DSH process. Any vari
 | `DSH_OIDC_ALLOW_ANY_USER`    | `allowAnyUser`    | `true` or `false`                                                        |
 | `DSH_OIDC_SENDER_CONTEXT`    | `senderContext`   | `true` or `false`                                                        |
 | `DSH_OIDC_PERSIST_SESSIONS`  | `persistSessions` | `true` or `false`                                                        |
-| `DSH_OIDC_TIME_ZONE`         | `timeZone`        | IANA time zone name, such as `Europe/Berlin`                             |
 
 A malformed value stops the plugin with a message naming the variable, never the value. At startup the log names which fields came from the environment.
 
@@ -79,35 +78,37 @@ DSH's Plugins page edits only fields a plugin declares volatile, and this plugin
 | `allowAnyUser`              | Admit every account the provider signs in, when access is already restricted at the provider (an application group, for example). Default `false`.                  |
 | `senderContext`             | Tell the model who wrote each Web prompt (see [Sender context](#sender-context)). Default `false`.                                                                  |
 | `persistSessions`           | Keep sign-ins across DSH restarts (see [Session persistence](#session-persistence)). Default `false`.                                                               |
-| `timeZone`                  | Zone the sender line gives send times in. Unset, it uses the zone the browser reported for the prompt, else the DSH process's zone.                                 |
 
 At least one allow category is mandatory unless `allowAnyUser` is `true`; it cannot be switched on by an empty list or a missing value. Every configured category is ANDed; values within subject, email, and `any` group categories are ORed. Match comparison is byte-exact with no case folding or substring behavior. Explicit empty policy lists are invalid. Group claims must be nonempty bounded arrays of unique nonempty bounded strings; scalar groups always deny. Custom required claims may be one bounded nonempty string or the same bounded unique-string array shape.
 
 ### Sender context
 
-DSH treats every signed-in browser as the same owner, so a model has no way to tell two people apart. With `senderContext: true` each prompt typed into the Web UI reaches the model with a line in front of it naming the person whose OIDC session sent it, and when:
+DSH treats every signed-in browser as the same owner, so a model has no way to tell two people apart. With `senderContext: true` each prompt typed into the Web UI records the person whose OIDC session sent it, and when, on the prompt's source. The prompt's text is unchanged. To have the model see it, install [dsh-message-context](https://github.com/soffits/dsh-message-context), which shows a line like this before the prompt:
 
 ```text
 [Web message from alice (oidc sub 0b3c9f4e-...), sent Mon 2026-03-02 09:41 UTC+01:00]
 ```
 
-The time is when DSH admitted the prompt, so one sent during a running turn keeps its own time even though the model reads it at the turn's next step. It shows weekday, date, local time and UTC offset in `timeZone`, or without one in the zone the browser reported with the prompt (the same zone DSH's time-context uses), else the process's zone.
-
-The name is `preferred_username`, then `name`, then `email`, with anything that could close or fake the line removed; the `sub` is the stable part to key on. The line is a separate context message (source kind `oidc-sender`, a `notice` with `issuer`, `subject` and `label`), committed to the session log right before the prompt it describes, and the Web UI shows the line as a notice row. The prompt's text is unchanged; its source also records the sender as `principal`, the field DSH uses for the caller behind a user message, so scripts can read who wrote a prompt without parsing the line:
+The sender goes in `principal`, the field DSH uses for the caller behind a user message, and the time in `envelope.sentAt` (Unix milliseconds, taken when DSH admitted the prompt, so one sent during a running turn keeps its own time):
 
 ```json
 {
-  "kind": "oidc-user",
-  "channel": "web",
-  "id": "<sub>",
-  "name": "alice",
-  "issuer": "https://id.example"
+  "principal": {
+    "kind": "oidc-user",
+    "channel": "web",
+    "id": "<sub>",
+    "name": "alice",
+    "issuer": "https://id.example"
+  },
+  "envelope": { "sentAt": 1772440872000 }
 }
 ```
 
+The name is `preferred_username`, then `name`, then `email`, with anything that could fake a line removed; the `sub` is the stable part to key on.
+
 `channel` and `id` are the fields to key on; `id` is unique within `issuer`. DSH itself writes `principal` only for callers other than the owner, and every OIDC browser is admitted as the owner, so the field is otherwise empty on Web prompts. It is attribution only: DSH authorizes requests by the connection, never by a message source.
 
-Only the server-side session decides: the plugin looks up its own HttpOnly session cookie on the `/api` request that admits the prompt (DSH's `connection/request` hook) and reads nothing else the browser sends. Prompts from anywhere else (other channel plugins, scheduled jobs, subagents, messages an agent sends to another session) get no line, including work that a Web request started but that runs after it. This is recognition, not isolation: everyone signed in still shares one DSH. The line goes to the session's model provider with the prompt, which is why it is off by default.
+Only the server-side session decides: the plugin looks up its own HttpOnly session cookie on the `/api` request that admits the prompt (DSH's `connection/request` hook) and reads nothing else the browser sends. Prompts from anywhere else (other channel plugins, scheduled jobs, subagents, messages an agent sends to another session) get no sender, including work that a Web request started but that runs after it. This is recognition, not isolation: everyone signed in still shares one DSH. With a renderer installed, the name goes to the session's model provider with the prompt, which is why it is off by default.
 
 ### Session persistence
 

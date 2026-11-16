@@ -1,7 +1,6 @@
 import { BlockList, isIP } from 'node:net'
 import z from '@deepseek-ai/schemastery'
 import { credentialRef, type CredentialRef } from '@deepseek-ai/dsh-credentials'
-import { canonicalTimeZone } from './clock.js'
 
 /** Host-only OIDC admission configuration. */
 export interface Config {
@@ -30,7 +29,6 @@ export interface Config {
   allowAnyUser?: boolean
   senderContext?: boolean
   persistSessions?: boolean
-  timeZone?: string
 }
 
 /** Loopback only: a proxy on the same host. */
@@ -77,7 +75,6 @@ export const Config: z<Config> = z.object({
   allowAnyUser: z.boolean().default(false),
   senderContext: z.boolean().default(false),
   persistSessions: z.boolean().default(false),
-  timeZone: z.string(),
 })
 
 export interface AuthorizationPolicy {
@@ -112,15 +109,10 @@ export interface ResolvedConfig {
   readonly trustedProxies: TrustedProxies
   /** Send signed-out browser navigations straight to the provider instead of the bundled sign-in page. */
   readonly directLogin: boolean
-  /** Put a line naming the signed-in sender in front of each Web prompt the model reads. */
+  /** Record the signed-in sender and send time on each Web prompt's source. */
   readonly senderContext: boolean
   /** Keep sessions in DSH's storage so a restart does not sign everyone out. */
   readonly persistSessions: boolean
-  /**
-   * Zone the sender notice gives send times in; undefined uses the browser's
-   * reported zone, else the process zone.
-   */
-  readonly timeZone?: string
 }
 
 /** Matches socket peer addresses against the configured proxy addresses and CIDR ranges. */
@@ -306,8 +298,5 @@ export function resolveConfig(config: Config): ResolvedConfig {
     directLogin: config.directLogin ?? false,
     senderContext: config.senderContext ?? false,
     persistSessions: config.persistSessions ?? false,
-    ...(config.timeZone === undefined || config.timeZone.trim() === ''
-      ? {}
-      : { timeZone: canonicalTimeZone(config.timeZone.trim()) }),
   }
 }

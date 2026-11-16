@@ -23,7 +23,7 @@ export { resolveConfig } from './config.js'
 export { SESSION_DOMAIN, parsePersistedSession, policyFingerprint } from './persistence.js'
 export { ENVIRONMENT_FIELDS, applyEnvironment, readEnvironment } from './env.js'
 export { REQUIRED_SEAMS, RuntimeCompatibilityError } from './compatibility.js'
-export { SENDER_SOURCE_KIND, senderOf, senderTag } from './sender.js'
+export { senderOf, senderPrincipal } from './sender.js'
 export const name = 'soffits-oidc'
 export const inject = ['webServer', 'connection', 'credentials']
 
@@ -111,10 +111,5 @@ async function serve(
   ]
   for (const route of routes)
     ctx.effect(() => ctx.webServer.register(route), `dsh-oidc: ${route.path}`)
-  if (config.senderContext)
-    applySenderContext(
-      ctx,
-      (req) => admission.principalOf(req),
-      config.timeZone === undefined ? {} : { timeZone: config.timeZone },
-    )
+  if (config.senderContext) applySenderContext(ctx, (req) => admission.principalOf(req))
 }
