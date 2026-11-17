@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { isIP } from 'node:net'
 import type { CredentialRef, ResolvedCredential } from '@deepseek-ai/dsh-credentials'
+import { AuditLog, type AuditPerson } from './audit.js'
 import type { ResolvedConfig, TrustedProxies } from './config.js'
 import type { OidcProtocol } from './oidc.js'
 import { authorizeClaims, type Principal } from './policy.js'
@@ -12,6 +13,8 @@ import {
   SESSION_COOKIE,
   TRANSACTION_COOKIE,
   type SessionPersistence,
+  type SessionSummary,
+  type SessionView,
   expiredCookie,
   readCookie,
   secureCookie,
@@ -142,9 +145,25 @@ function wantsNavigation(req: IncomingMessage): boolean {
   )
 }
 
+/** The person a principal names, for the audit log. */
+export function auditPerson(principal: Principal): AuditPerson {
+  const name = principal.username ?? principal.displayName ?? principal.email
+  return {
+    issuer: principal.issuer,
+    subject: principal.subject,
+    ...(name === undefined ? {} : { name }),
+  }
+}
+
+function claimText(claims: Readonly<Record<string, unknown>>, name: string): string | undefined {
+  const value = claims[name]
+  return typeof value === 'string' && value !== '' && value.length <= 4096 ? value : undefined
+}
+
 export class OidcAdmission {
   private readonly transactions: AuthorizationTransactions
-  private readonly sessions: BrowserSessions
+  readonly sessions: BrowserSessions
+  readonly audit: AuditLog
   private readonly limiter: FixedWindowRateLimiter
 
   constructor(
@@ -154,6 +173,7 @@ export class OidcAdmission {
     private readonly protocol: OidcProtocol,
     private readonly logger: AdmissionLogger,
     persistence?: SessionPersistence,
+    audit?: AuditLog,
   ) {
     this.transactions = new AuthorizationTransactions(
       config.transactionMaxAgeSeconds * 1000,
@@ -166,6 +186,14 @@ export class OidcAdmission {
       persistence,
     )
     this.limiter = new FixedWindowRateLimiter(config.loginRateLimitPerMinute)
+    this.audit =
+      audit ??
+      new AuditLog({
+        retentionMilliseconds: config.auditRetentionDays * 86_400_000,
+        maxEvents: config.maxAuditEvents,
+        onError: () => logger.warn('dsh-oidc: audit log write failed'),
+        emit: () => undefined,
+      })
   }
 
   /** Load persisted sessions; a no-op without persistence. */
@@ -242,12 +270,39 @@ export class OidcAdmission {
         currentUrl,
       })
       const principal = authorizeClaims(claims, this.config.issuerId, this.config.policy)
+      const ip = trustedClientIp(req, this.config.trustedProxies)
+      const userAgent = header(req, 'user-agent')
+      const where = {
+        ...(ip === undefined ? {} : { ip }),
+        ...(userAgent === undefined ? {} : { userAgent }),
+      }
       if (principal === undefined) {
         this.logger.warn(`dsh-oidc policy denied correlation=${correlation}`)
+        const subject = claimText(claims, 'sub')
+        const name = claimText(claims, 'preferred_username') ?? claimText(claims, 'email')
+        this.audit.record({
+          type: 'sign-in-denied',
+          ...(subject === undefined
+            ? {}
+            : {
+                person: {
+                  issuer: claimText(claims, 'iss') ?? this.config.issuerId,
+                  subject,
+                  ...(name === undefined ? {} : { name }),
+                },
+              }),
+          ...where,
+        })
         return plain(res, 403, 'access denied\n')
       }
-      const session = this.sessions.create(principal)
+      const session = this.sessions.create(principal, { kind: 'browser', ...where })
       if (session === undefined) return plain(res, 503, 'authentication unavailable\n')
+      this.audit.record({
+        type: 'sign-in',
+        person: auditPerson(principal),
+        session: session.id,
+        ...where,
+      })
       // The callback arrives on a navigation started by the provider's site, so
       // a plain redirect keeps the whole chain cross-site and the browser never
       // sends DSH's SameSite=Strict native cookie after the token exchange.
@@ -293,7 +348,38 @@ export class OidcAdmission {
    * plugin's own HttpOnly session cookie only; undefined without one.
    */
   principalOf(req: IncomingMessage): Principal | undefined {
-    return this.sessions.read(this.sessionValue(req))?.principal
+    return this.currentSession(req)?.principal
+  }
+
+  /** The live session the request's cookie names, refreshing its last use. */
+  currentSession(req: IncomingMessage): SessionView | undefined {
+    return this.sessions.read(this.sessionValue(req))
+  }
+
+  /** The live session a raw Cookie header names. */
+  sessionFromCookie(cookie: string | null | undefined): SessionView | undefined {
+    return this.sessions.read(readCookie(cookie ?? undefined, SESSION_COOKIE))
+  }
+
+  /** Every live session, most recently used first. */
+  listSessions(): SessionSummary[] {
+    return this.sessions.list()
+  }
+
+  /**
+   * End the session with public id `id` on behalf of `actor`, durably.
+   * @returns the revoked session, or undefined when none is live with that id.
+   */
+  async revokeSession(id: string, actor: SessionView): Promise<SessionSummary | undefined> {
+    const revoked = await this.sessions.revoke(id)
+    if (revoked === undefined) return undefined
+    this.audit.record({
+      type: 'session-revoked',
+      person: auditPerson(revoked.principal),
+      by: auditPerson(actor.principal),
+      session: revoked.id,
+    })
+    return revoked
   }
 
   /**
@@ -351,6 +437,12 @@ export class OidcAdmission {
     if (session === undefined || body?.get('csrf') !== session.csrf)
       return plain(res, 403, 'forbidden\n')
     await this.sessions.delete(value)
+    this.audit.record({
+      type: 'sign-out',
+      person: auditPerson(session.principal),
+      session: session.id,
+      ...(session.ip === undefined ? {} : { ip: session.ip }),
+    })
     let destination = this.config.publicOrigin.href
     try {
       destination = (await this.protocol.logoutUrl(await this.secret()))?.href ?? destination

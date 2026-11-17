@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0-alpha.10
+
+- `/api` now also wants a live OIDC session: a listener in DSH's `connection/request` hook answers 401 to any `/api` HTTP request without one, so DSH's own 30-day cookie alone (from a browser that signed out, or copied off a device) gets no RPC. On by default; `requireSessionOnApi: false` (`DSH_OIDC_REQUIRE_SESSION_ON_API`) turns it off for API clients that use DSH's token directly.
+- Add an audit log of sign-ins, policy denials, sign-outs and revoked sessions, with the client address and User-Agent. Kept 90 days (`auditRetentionDays`) up to 5000 events (`maxAuditEvents`); with `persistSessions` it is stored in `storages/dsh_oidc_audit.json`. Each event is also emitted as the Cordis event `dsh-oidc/audit`.
+- Sessions now carry a random public id, their kind, and the client address and User-Agent at sign-in, for the coming sessions list. Records stored by earlier releases keep working and get an id on the first restart.
+- Published to npm as `@soffits/dsh-oidc`.
+
 ## 0.3.0-alpha.9
 
 - Add the `requestIdentity` service: inside an authenticated `/api` request, `ctx.requestIdentity.current()` returns the person whose OIDC session made it (`{ provider: 'oidc', issuer, id: <sub>, name }`) or `null`, so other plugins can check who is calling their own `/api` routes. The interface is provider-neutral; see [Request identity for other plugins](README.md#request-identity-for-other-plugins).

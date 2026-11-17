@@ -1,6 +1,6 @@
 # Install and operate DSH OIDC (DSH Web 0.2.x)
 
-This guide installs the plugin as a DSH bundle, either from a GitHub release tarball or from a tarball built from a checkout of this repository; `@soffits/dsh-oidc` is not published to npm. Try it in a disposable DSH home first, then back up any real home and proxy configuration before repeating it. Do not copy provider exports, session cookies, client secrets, or real subject IDs into a Git checkout or support ticket.
+This guide installs the plugin as a DSH bundle from npm (`@soffits/dsh-oidc`, from 0.3.0-alpha.10), a GitHub release tarball, or a tarball built from a checkout of this repository. Try it in a disposable DSH home first, then back up any real home and proxy configuration before repeating it. Do not copy provider exports, session cookies, client secrets, or real subject IDs into a Git checkout or support ticket.
 
 ## Prerequisites and topology
 
@@ -19,11 +19,17 @@ When Caddy runs in another container, DSH has to listen on its container address
 
 The package is a DSH bundle: its own `cordis.patch.yml` adds the `soffits-oidc` row (and turns off the startup bearer-URL print), so the profile needs no row of its own. Installing it enables the bundle, which records it in the profile's `package.json` under `dsh.profile.bundles`. It then shows on the sidebar **Plugins** page with its title, description and switch, and its row appears under **Settings → Built-in plugins**.
 
-From a release (pin the version you reviewed):
+From npm (pin the version you reviewed):
 
 ```sh
 export DSH_HOME=/path/to/isolated-dsh-home
 dsh --profile web-oidc --from-default-profile web --dump-config >/dev/null
+dsh plugin --profile web-oidc add @soffits/dsh-oidc@<version>
+```
+
+The same tarball is attached to each GitHub release, for hosts that can't reach npm:
+
+```sh
 dsh plugin --profile web-oidc add https://github.com/soffits/dsh-oidc/releases/download/v<version>/soffits-dsh-oidc-<version>.tgz
 ```
 

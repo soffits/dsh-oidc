@@ -702,3 +702,111 @@ describe('OIDC route admission', () => {
     expect(stale.captured.status).toBe(401)
   })
 })
+
+describe('session metadata and audit trail', () => {
+  async function signIn(
+    admission: OidcAdmission,
+    headers: Record<string, string> = {},
+  ): Promise<string> {
+    const started = await login(admission)
+    const callback = response()
+    await admission.callback(
+      request('GET', `/auth/callback?state=${started.state}&code=c`, {
+        cookie: started.cookie,
+        ...headers,
+      }),
+      callback.value,
+    )
+    return cookieFrom(callback.captured.headers, SESSION_COOKIE)
+  }
+
+  it('records who signed in, from where, with which session', async () => {
+    const { admission } = harness()
+    const cookie = await signIn(admission, { 'user-agent': 'Firefox/140' })
+    const [session] = admission.listSessions()
+    expect(session).toMatchObject({
+      kind: 'browser',
+      ip: '192.0.2.10',
+      userAgent: 'Firefox/140',
+      principal: { subject: 'allowed' },
+    })
+    expect(session?.id).toMatch(/^[A-Za-z0-9_-]{22}$/u)
+    expect(cookie).not.toContain(session!.id)
+    expect(admission.audit.recent(10)).toEqual([
+      expect.objectContaining({
+        type: 'sign-in',
+        person: { issuer: 'https://id.example/issuer', subject: 'allowed' },
+        session: session!.id,
+        ip: '192.0.2.10',
+        userAgent: 'Firefox/140',
+      }),
+    ])
+  })
+
+  it('records a policy denial with the refused subject and no session', async () => {
+    const { admission, protocol } = harness()
+    protocol.claims = { iss: 'https://id.example/issuer', sub: 'stranger', email: 's@x.example' }
+    const started = await login(admission)
+    const callback = response()
+    await admission.callback(
+      request('GET', `/auth/callback?state=${started.state}&code=c`, { cookie: started.cookie }),
+      callback.value,
+    )
+    expect(callback.captured.status).toBe(403)
+    expect(admission.listSessions()).toEqual([])
+    expect(admission.audit.recent(1)[0]).toMatchObject({
+      type: 'sign-in-denied',
+      person: { subject: 'stranger', name: 's@x.example' },
+      ip: '192.0.2.10',
+    })
+  })
+
+  it('records sign-out and ends the session in the list', async () => {
+    const { admission } = harness()
+    const cookie = await signIn(admission)
+    const { csrf, id } = admission.currentSession(request('GET', '/', { cookie }))!
+    const res = response()
+    await admission.logout(
+      request(
+        'POST',
+        '/auth/logout',
+        {
+          cookie,
+          origin: 'https://dsh.example',
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        `csrf=${csrf}`,
+      ),
+      res.value,
+    )
+    expect(res.captured.status).toBe(303)
+    expect(admission.listSessions()).toEqual([])
+    expect(admission.audit.recent(1)[0]).toMatchObject({ type: 'sign-out', session: id })
+  })
+
+  it('revokes another session by id, names who did it, and the revoked cookie stops working', async () => {
+    const { admission } = harness()
+    const first = await signIn(admission)
+    const second = await signIn(admission)
+    const actor = admission.currentSession(request('GET', '/', { cookie: first }))!
+    const target = admission.currentSession(request('GET', '/', { cookie: second }))!
+    const ended: string[] = []
+    admission.sessions.onEnd((session, reason) => ended.push(`${session.id}:${reason}`))
+
+    expect(await admission.revokeSession('A'.repeat(22), actor)).toBeUndefined()
+    const revoked = await admission.revokeSession(target.id, actor)
+    expect(revoked?.id).toBe(target.id)
+    expect(ended).toEqual([`${target.id}:revoked`])
+    expect(admission.listSessions().map(({ id }) => id)).toEqual([actor.id])
+    expect(admission.principalOf(request('GET', '/', { cookie: second }))).toBeUndefined()
+    expect(admission.audit.recent(1)[0]).toMatchObject({
+      type: 'session-revoked',
+      session: target.id,
+      person: { subject: 'allowed' },
+      by: { subject: 'allowed' },
+    })
+    const check = response()
+    admission.check(request('GET', '/auth/check', { cookie: second }), check.value)
+    expect(check.captured.status).toBe(401)
+  })
+})

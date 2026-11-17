@@ -14,13 +14,34 @@ export interface AuthorizationTransaction {
   readonly expiresAt: number
 }
 
-export interface SessionView {
+/** What kind of credential a session belongs to. */
+export type SessionKind = 'browser' | 'device' | 'break-glass'
+
+export const SESSION_KINDS: readonly SessionKind[] = ['browser', 'device', 'break-glass']
+
+/** Where a session came from, recorded for the sessions list and the audit log. */
+export interface SessionOrigin {
+  readonly kind: SessionKind
+  /** The client's User-Agent at sign-in, cut to {@link MAX_USER_AGENT} characters. */
+  readonly userAgent?: string
+  /** The client address at sign-in as the plugin saw it. */
+  readonly ip?: string
+}
+
+export const MAX_USER_AGENT = 512
+
+export interface SessionView extends SessionOrigin {
+  /** Public, random handle for listing and revoking; never the credential. */
+  readonly id: string
   readonly principal: Principal
   readonly issuedAt: number
   readonly lastUsedAt: number
   readonly expiresAt: number
   readonly csrf: string
 }
+
+/** A session as the sessions list shows it: everything but the CSRF value. */
+export type SessionSummary = Omit<SessionView, 'csrf'>
 
 function opaqueToken(): string {
   return randomBytes(TOKEN_BYTES).toString('base64url')
@@ -92,8 +113,14 @@ export class AuthorizationTransactions {
  * One session as written to the optional persistent store. The record is keyed
  * by the SHA-256 digest of the cookie value; the cookie value itself is never
  * stored, so a copy of the store cannot be turned back into a working cookie.
+ * `id`, `kind`, `userAgent` and `ip` arrived in 0.3.0-alpha.10; older records
+ * lack them and get a fresh id and kind `browser` on restore.
  */
 export interface PersistedSession {
+  readonly id?: string
+  readonly kind?: SessionKind
+  readonly userAgent?: string
+  readonly ip?: string
   readonly principal: Principal
   readonly issuedAt: number
   readonly lastUsedAt: number
@@ -118,6 +145,9 @@ export interface SessionPersistence {
   readonly onError: (error: unknown) => void
 }
 
+/** Why a session ended. */
+export type SessionEndReason = 'logout' | 'revoked' | 'expired' | 'restore'
+
 /**
  * How often a session's last-use time is written back. The proxy checks every
  * request, so writing each one would rewrite the store constantly. A restored
@@ -126,6 +156,7 @@ export interface SessionPersistence {
 export const LAST_USED_WRITE_INTERVAL = 60_000
 
 const DIGEST = /^[A-Za-z0-9_-]{43}$/u
+const SESSION_ID = /^[A-Za-z0-9_-]{22}$/u
 
 interface StoredSession extends SessionView {
   readonly idleTimeoutMilliseconds: number
@@ -133,8 +164,31 @@ interface StoredSession extends SessionView {
   readonly writtenLastUsedAt: number
 }
 
+function sessionId(): string {
+  return randomBytes(16).toString('base64url')
+}
+
+function summary(session: StoredSession): SessionSummary {
+  return {
+    id: session.id,
+    kind: session.kind,
+    ...(session.userAgent === undefined ? {} : { userAgent: session.userAgent }),
+    ...(session.ip === undefined ? {} : { ip: session.ip }),
+    principal: session.principal,
+    issuedAt: session.issuedAt,
+    lastUsedAt: session.lastUsedAt,
+    expiresAt: session.expiresAt,
+  }
+}
+
 export class BrowserSessions {
+  /** Keyed by the SHA-256 digest of the credential. */
   private readonly entries = new Map<string, StoredSession>()
+  /** Public id to digest key. */
+  private readonly ids = new Map<string, string>()
+  private readonly endListeners = new Set<
+    (session: SessionSummary, reason: SessionEndReason) => void
+  >()
 
   constructor(
     private readonly maxAgeMilliseconds: number,
@@ -168,12 +222,23 @@ export class BrowserSessions {
     }
     // Keep the most recently used sessions when the cap shrank.
     live.sort(([, a], [, b]) => b.lastUsedAt - a.lastUsedAt)
+    const upgraded: string[] = []
     for (const [key, record] of live) {
       if (this.entries.size >= this.maxEntries) {
         stale.push(key)
         continue
       }
+      let id = record.id
+      if (id === undefined || !SESSION_ID.test(id) || this.ids.has(id)) {
+        id = sessionId()
+        upgraded.push(key)
+      }
+      this.ids.set(id, key)
       this.entries.set(key, {
+        id,
+        kind: record.kind ?? 'browser',
+        ...(record.userAgent === undefined ? {} : { userAgent: record.userAgent }),
+        ...(record.ip === undefined ? {} : { ip: record.ip }),
         principal: record.principal,
         issuedAt: record.issuedAt,
         lastUsedAt: record.lastUsedAt,
@@ -183,21 +248,36 @@ export class BrowserSessions {
         writtenLastUsedAt: record.lastUsedAt,
       })
     }
-    await Promise.all(stale.map((key) => this.remove(key)))
+    for (const key of upgraded) this.write(key, this.entries.get(key)!)
+    await Promise.all(stale.map((key) => this.remove(key, 'restore')))
     return this.entries.size
   }
 
   create(
     principal: Principal,
+    origin: SessionOrigin = { kind: 'browser' },
     now = Date.now(),
-  ): { readonly value: string; readonly expiresAt: number; readonly csrf: string } | undefined {
+  ):
+    | {
+        readonly id: string
+        readonly value: string
+        readonly expiresAt: number
+        readonly csrf: string
+      }
+    | undefined {
     this.prune(now)
     if (this.entries.size >= this.maxEntries) return undefined
     const value = opaqueToken()
     const csrf = opaqueToken()
     const expiresAt = now + this.maxAgeMilliseconds
     const key = digest(value)
+    const id = sessionId()
+    const userAgent = origin.userAgent?.slice(0, MAX_USER_AGENT)
     const session: StoredSession = {
+      id,
+      kind: origin.kind,
+      ...(userAgent === undefined || userAgent === '' ? {} : { userAgent }),
+      ...(origin.ip === undefined ? {} : { ip: origin.ip }),
       principal,
       issuedAt: now,
       lastUsedAt: now,
@@ -207,8 +287,9 @@ export class BrowserSessions {
       writtenLastUsedAt: now,
     }
     this.entries.set(key, session)
+    this.ids.set(id, key)
     this.write(key, session)
-    return { value, expiresAt, csrf }
+    return { id, value, expiresAt, csrf }
   }
 
   read(value: string | undefined, now = Date.now()): SessionView | undefined {
@@ -217,7 +298,7 @@ export class BrowserSessions {
     const session = this.entries.get(key)
     if (session === undefined) return undefined
     if (session.expiresAt <= now || session.lastUsedAt + session.idleTimeoutMilliseconds <= now) {
-      void this.remove(key)
+      void this.remove(key, 'expired')
       return undefined
     }
     const due = now - session.writtenLastUsedAt >= LAST_USED_WRITE_INTERVAL
@@ -232,12 +313,47 @@ export class BrowserSessions {
   }
 
   /**
-   * Revoke a session. With a persistent store the returned promise settles
-   * once the deletion is written, so a logout answered afterwards stays
-   * revoked across a restart.
+   * Revoke a session by its credential. With a persistent store the returned
+   * promise settles once the deletion is written, so a logout answered
+   * afterwards stays revoked across a restart.
    */
   async delete(value: string | undefined): Promise<void> {
-    if (value !== undefined && SAFE_TOKEN.test(value)) await this.remove(digest(value))
+    if (value !== undefined && SAFE_TOKEN.test(value)) await this.remove(digest(value), 'logout')
+  }
+
+  /**
+   * Revoke a session by its public id, durably like {@link delete}.
+   * @returns the revoked session, or undefined when no live session has that id.
+   */
+  async revoke(id: string, now = Date.now()): Promise<SessionSummary | undefined> {
+    this.prune(now)
+    const key = this.ids.get(id)
+    const session = key === undefined ? undefined : this.entries.get(key)
+    if (key === undefined || session === undefined) return undefined
+    await this.remove(key, 'revoked')
+    return summary(session)
+  }
+
+  /** Every live session, most recently used first. */
+  list(now = Date.now()): SessionSummary[] {
+    this.prune(now)
+    return [...this.entries.values()].sort((a, b) => b.lastUsedAt - a.lastUsedAt).map(summary)
+  }
+
+  /**
+   * Call `listener` whenever a session ends: logout, revoke, expiry, or a
+   * record dropped on restore. Used to close connections the session opened.
+   */
+  onEnd(listener: (session: SessionSummary, reason: SessionEndReason) => void): () => void {
+    this.endListeners.add(listener)
+    return () => {
+      this.endListeners.delete(listener)
+    }
+  }
+
+  /** Drop every session that is past its absolute or idle limit. */
+  sweep(now = Date.now()): void {
+    this.prune(now)
   }
 
   get size(): number {
@@ -247,12 +363,23 @@ export class BrowserSessions {
   private prune(now: number): void {
     for (const [key, value] of this.entries) {
       if (value.expiresAt <= now || value.lastUsedAt + value.idleTimeoutMilliseconds <= now)
-        void this.remove(key)
+        void this.remove(key, 'expired')
     }
   }
 
-  private async remove(key: string): Promise<void> {
+  private async remove(key: string, reason: SessionEndReason): Promise<void> {
+    const session = this.entries.get(key)
     this.entries.delete(key)
+    if (session !== undefined) {
+      this.ids.delete(session.id)
+      const ended = summary(session)
+      for (const listener of this.endListeners)
+        try {
+          listener(ended, reason)
+        } catch {
+          // A listener's failure must not keep a session alive.
+        }
+    }
     const persistence = this.persistence
     if (persistence === undefined) return
     try {
@@ -266,6 +393,10 @@ export class BrowserSessions {
     const persistence = this.persistence
     if (persistence === undefined) return
     const record: PersistedSession = {
+      id: session.id,
+      kind: session.kind,
+      ...(session.userAgent === undefined ? {} : { userAgent: session.userAgent }),
+      ...(session.ip === undefined ? {} : { ip: session.ip }),
       principal: session.principal,
       issuedAt: session.issuedAt,
       lastUsedAt: session.lastUsedAt,

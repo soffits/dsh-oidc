@@ -4,6 +4,8 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-credentials'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { OidcAdmission } from './admission.js'
+import { applyApiGuard } from './api-guard.js'
+import { AUDIT_EVENT, AUDIT_TABLE, AuditLog, auditDomain, type AuditTable } from './audit.js'
 import { RuntimeCompatibilityError, assertRuntimeCompatibility } from './compatibility.js'
 import { Config, resolveConfig, type Config as OidcConfig, type ResolvedConfig } from './config.js'
 import { applyEnvironment, readEnvironment } from './env.js'
@@ -26,6 +28,16 @@ export { SESSION_DOMAIN, parsePersistedSession, policyFingerprint } from './pers
 export { ENVIRONMENT_FIELDS, applyEnvironment, readEnvironment } from './env.js'
 export { REQUIRED_SEAMS, RuntimeCompatibilityError } from './compatibility.js'
 export { senderOf, senderPrincipal } from './sender.js'
+export {
+  AUDIT_DOMAIN,
+  AUDIT_EVENT,
+  AUDIT_TYPES,
+  parseAuditEvent,
+  type AuditEvent,
+  type AuditPerson,
+  type AuditType,
+} from './audit.js'
+export { applyApiGuard } from './api-guard.js'
 export {
   REQUEST_IDENTITY_SERVICE,
   applyRequestIdentity,
@@ -66,11 +78,18 @@ export async function apply(ctx: Context, rawConfig: OidcConfig | undefined): Pr
       ])
     const domain = await facility!.open(sessionDomain)
     sub.effect(() => () => domain.close(), 'dsh-oidc: session store')
-    await serve(sub, config, {
-      table: domain.table(SESSION_TABLE),
-      policy: policyFingerprint(config),
-      onError: () => sub.logger.warn('dsh-oidc: session store write failed'),
-    })
+    const audit = await facility!.open(auditDomain)
+    sub.effect(() => () => audit.close(), 'dsh-oidc: audit store')
+    await serve(
+      sub,
+      config,
+      {
+        table: domain.table(SESSION_TABLE),
+        policy: policyFingerprint(config),
+        onError: () => sub.logger.warn('dsh-oidc: session store write failed'),
+      },
+      audit.table(AUDIT_TABLE),
+    )
   })
 }
 
@@ -88,7 +107,17 @@ async function serve(
   ctx: Context,
   config: ResolvedConfig,
   persistence?: SessionPersistence,
+  auditTable?: AuditTable,
 ): Promise<void> {
+  const audit = new AuditLog({
+    retentionMilliseconds: config.auditRetentionDays * 86_400_000,
+    maxEvents: config.maxAuditEvents,
+    ...(auditTable === undefined ? {} : { table: auditTable }),
+    onError: () => ctx.logger.warn('dsh-oidc: audit log write failed'),
+    emit: (event) => {
+      ctx.emit(AUDIT_EVENT, event)
+    },
+  })
   const admission = new OidcAdmission(
     config,
     ctx.credentials,
@@ -96,7 +125,9 @@ async function serve(
     new OpenIdClientProtocol(config),
     ctx.logger,
     persistence,
+    audit,
   )
+  if (auditTable !== undefined) await audit.restore()
   if (persistence !== undefined) {
     const restored = await admission.restoreSessions()
     ctx.logger.info(`dsh-oidc: restored ${String(restored)} persisted session(s)`)
@@ -121,6 +152,8 @@ async function serve(
   for (const route of routes)
     ctx.effect(() => ctx.webServer.register(route), `dsh-oidc: ${route.path}`)
   const principalOf = (req: IncomingMessage) => admission.principalOf(req)
+  if (config.requireSessionOnApi)
+    applyApiGuard(ctx, (req) => admission.currentSession(req) !== undefined)
   ctx.provide(REQUEST_IDENTITY_SERVICE, applyRequestIdentity(ctx, principalOf))
   if (config.senderContext) applySenderContext(ctx, principalOf)
 }

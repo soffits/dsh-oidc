@@ -29,6 +29,9 @@ export interface Config {
   allowAnyUser?: boolean
   senderContext?: boolean
   persistSessions?: boolean
+  requireSessionOnApi?: boolean
+  auditRetentionDays?: number
+  maxAuditEvents?: number
 }
 
 /** Loopback only: a proxy on the same host. */
@@ -75,6 +78,9 @@ export const Config: z<Config> = z.object({
   allowAnyUser: z.boolean().default(false),
   senderContext: z.boolean().default(false),
   persistSessions: z.boolean().default(false),
+  requireSessionOnApi: z.boolean().default(true),
+  auditRetentionDays: z.natural().min(1).max(3650).default(90),
+  maxAuditEvents: z.natural().min(100).max(100_000).default(5_000),
 })
 
 export interface AuthorizationPolicy {
@@ -113,6 +119,10 @@ export interface ResolvedConfig {
   readonly senderContext: boolean
   /** Keep sessions in DSH's storage so a restart does not sign everyone out. */
   readonly persistSessions: boolean
+  /** Refuse authenticated `/api` requests that carry no live OIDC session. */
+  readonly requireSessionOnApi: boolean
+  readonly auditRetentionDays: number
+  readonly maxAuditEvents: number
 }
 
 /** Matches socket peer addresses against the configured proxy addresses and CIDR ranges. */
@@ -298,5 +308,8 @@ export function resolveConfig(config: Config): ResolvedConfig {
     directLogin: config.directLogin ?? false,
     senderContext: config.senderContext ?? false,
     persistSessions: config.persistSessions ?? false,
+    requireSessionOnApi: config.requireSessionOnApi ?? true,
+    auditRetentionDays: config.auditRetentionDays ?? 90,
+    maxAuditEvents: config.maxAuditEvents ?? 5_000,
   }
 }

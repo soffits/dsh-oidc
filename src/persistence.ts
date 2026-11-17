@@ -1,7 +1,15 @@
 import { createHash } from 'node:crypto'
 import type { ResolvedConfig } from './config.js'
 import type { Principal } from './policy.js'
-import type { PersistedSession, SessionTable } from './state.js'
+import { isIP } from 'node:net'
+import type { AUDIT_TABLE, AuditTable, auditDomain } from './audit.js'
+import {
+  MAX_USER_AGENT,
+  SESSION_KINDS,
+  type PersistedSession,
+  type SessionKind,
+  type SessionTable,
+} from './state.js'
 
 /**
  * Optional session persistence on DSH's storage-domain service. The domain is
@@ -12,6 +20,7 @@ export const SESSION_DOMAIN = 'dsh_oidc_sessions'
 export const SESSION_TABLE = 'sessions'
 
 const TOKEN = /^[A-Za-z0-9_-]{43}$/u
+const SESSION_ID = /^[A-Za-z0-9_-]{22}$/u
 const PRINCIPAL_TEXT = ['displayName', 'email', 'username', 'picture'] as const
 
 function invalid(): never {
@@ -54,7 +63,19 @@ export function parsePersistedSession(value: unknown): PersistedSession {
   const raw = record(value)
   const csrf = text(raw.csrf)
   if (!TOKEN.test(csrf)) invalid()
+  const id = raw.id === undefined ? undefined : text(raw.id)
+  if (id !== undefined && !SESSION_ID.test(id)) invalid()
+  const kind = raw.kind === undefined ? undefined : text(raw.kind)
+  if (kind !== undefined && !(SESSION_KINDS as readonly string[]).includes(kind)) invalid()
+  const userAgent = raw.userAgent === undefined ? undefined : text(raw.userAgent)
+  if (userAgent !== undefined && userAgent.length > MAX_USER_AGENT) invalid()
+  const ip = raw.ip === undefined ? undefined : text(raw.ip)
+  if (ip !== undefined && isIP(ip) === 0) invalid()
   return {
+    ...(id === undefined ? {} : { id }),
+    ...(kind === undefined ? {} : { kind: kind as SessionKind }),
+    ...(userAgent === undefined ? {} : { userAgent }),
+    ...(ip === undefined ? {} : { ip }),
     principal: principalOf(raw.principal),
     issuedAt: time(raw.issuedAt),
     lastUsedAt: time(raw.lastUsedAt),
@@ -98,9 +119,15 @@ export function policyFingerprint(config: ResolvedConfig): string {
 /** The DSH storage-domain service, reduced to what this plugin calls. */
 export interface SessionDomainFacility {
   open(spec: typeof sessionDomain): Promise<SessionDomain>
+  open(spec: typeof auditDomain): Promise<AuditDomain>
 }
 
 export interface SessionDomain {
   table(name: typeof SESSION_TABLE): SessionTable
+  close(): Promise<void>
+}
+
+export interface AuditDomain {
+  table(name: typeof AUDIT_TABLE): AuditTable
   close(): Promise<void>
 }

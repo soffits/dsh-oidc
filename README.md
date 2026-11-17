@@ -41,20 +41,21 @@ The DSH peers are a range over the 0.2 line, so new 0.2.x releases work without 
 
 Values for the site are supplied by the environment of the DSH process. Any variable that is present with a non-empty value takes precedence over the matching field from the row config: it substitutes for that field instead of merging with it. Consequently, no profile patch is able to broaden a proxy list or an allowlist configured by the environment. Fields left unset by the environment may use the row config as their source. If neither source provides a value, the plugin will not start, no route is registered, and the proxy rejects all traffic.
 
-| Variable                     | Field             | Format                                                                   |
-| ---------------------------- | ----------------- | ------------------------------------------------------------------------ |
-| `DSH_OIDC_ISSUER`            | `issuer`          | URL, required                                                            |
-| `DSH_OIDC_CLIENT_ID`         | `clientId`        | string, required                                                         |
-| `DSH_OIDC_PUBLIC_ORIGIN`     | `publicOrigin`    | URL, required                                                            |
-| `DSH_OIDC_CLIENT_SECRET_REF` | `clientSecretRef` | credential reference name; omit for a public PKCE client                 |
-| `DSH_OIDC_ALLOWED_SUBJECTS`  | `allowedSubjects` | JSON array of `{ "issuer", "subject" }`, or of subjects under the issuer |
-| `DSH_OIDC_ALLOWED_EMAILS`    | `allowedEmails`   | JSON array of strings                                                    |
-| `DSH_OIDC_ALLOWED_GROUPS`    | `allowedGroups`   | JSON array of strings                                                    |
-| `DSH_OIDC_TRUSTED_PROXIES`   | `trustedProxies`  | JSON array of IPs or CIDR ranges                                         |
-| `DSH_OIDC_DIRECT_LOGIN`      | `directLogin`     | `true` or `false`                                                        |
-| `DSH_OIDC_ALLOW_ANY_USER`    | `allowAnyUser`    | `true` or `false`                                                        |
-| `DSH_OIDC_SENDER_CONTEXT`    | `senderContext`   | `true` or `false`                                                        |
-| `DSH_OIDC_PERSIST_SESSIONS`  | `persistSessions` | `true` or `false`                                                        |
+| Variable                          | Field                 | Format                                                                   |
+| --------------------------------- | --------------------- | ------------------------------------------------------------------------ |
+| `DSH_OIDC_ISSUER`                 | `issuer`              | URL, required                                                            |
+| `DSH_OIDC_CLIENT_ID`              | `clientId`            | string, required                                                         |
+| `DSH_OIDC_PUBLIC_ORIGIN`          | `publicOrigin`        | URL, required                                                            |
+| `DSH_OIDC_CLIENT_SECRET_REF`      | `clientSecretRef`     | credential reference name; omit for a public PKCE client                 |
+| `DSH_OIDC_ALLOWED_SUBJECTS`       | `allowedSubjects`     | JSON array of `{ "issuer", "subject" }`, or of subjects under the issuer |
+| `DSH_OIDC_ALLOWED_EMAILS`         | `allowedEmails`       | JSON array of strings                                                    |
+| `DSH_OIDC_ALLOWED_GROUPS`         | `allowedGroups`       | JSON array of strings                                                    |
+| `DSH_OIDC_TRUSTED_PROXIES`        | `trustedProxies`      | JSON array of IPs or CIDR ranges                                         |
+| `DSH_OIDC_DIRECT_LOGIN`           | `directLogin`         | `true` or `false`                                                        |
+| `DSH_OIDC_ALLOW_ANY_USER`         | `allowAnyUser`        | `true` or `false`                                                        |
+| `DSH_OIDC_SENDER_CONTEXT`         | `senderContext`       | `true` or `false`                                                        |
+| `DSH_OIDC_PERSIST_SESSIONS`       | `persistSessions`     | `true` or `false`                                                        |
+| `DSH_OIDC_REQUIRE_SESSION_ON_API` | `requireSessionOnApi` | `true` or `false`                                                        |
 
 A malformed value stops the plugin with a message naming the variable, never the value. At startup the log names which fields came from the environment.
 
@@ -77,7 +78,10 @@ DSH's Plugins page edits only fields a plugin declares volatile, and this plugin
 | `directLogin`               | Send signed-out browser navigations straight to the provider instead of the bundled sign-in page (default `false`).                                                 |
 | `allowAnyUser`              | Admit every account the provider signs in, when access is already restricted at the provider (an application group, for example). Default `false`.                  |
 | `senderContext`             | Tell the model who wrote each Web prompt (see [Sender context](#sender-context)). Default `false`.                                                                  |
-| `persistSessions`           | Keep sign-ins across DSH restarts (see [Session persistence](#session-persistence)). Default `false`.                                                               |
+| `persistSessions`           | Keep sign-ins and the audit log across DSH restarts (see [Session persistence](#session-persistence)). Default `false`.                                             |
+| `requireSessionOnApi`       | Refuse `/api` requests that carry DSH's cookie but no live OIDC session (see [The /api guard](#the-api-guard)). Default `true`.                                     |
+| `auditRetentionDays`        | How long audit events are kept (see [Audit log](#audit-log)). Default 90.                                                                                           |
+| `maxAuditEvents`            | Most audit events kept; the oldest go first. Default 5000.                                                                                                          |
 
 At least one allow category is mandatory unless `allowAnyUser` is `true`; it cannot be switched on by an empty list or a missing value. Every configured category is ANDed; values within subject, email, and `any` group categories are ORed. Match comparison is byte-exact with no case folding or substring behavior. Explicit empty policy lists are invalid. Group claims must be nonempty bounded arrays of unique nonempty bounded strings; scalar groups always deny. Custom required claims may be one bounded nonempty string or the same bounded unique-string array shape.
 
@@ -139,17 +143,36 @@ ctx.connection.fetch.register({
 })
 ```
 
-The service is always on; it reads only this plugin's own session cookie, the same check as `senderContext`. It is `null` outside a request, for a request without an OIDC session (an API client with DSH's own token), and in work a request started that keeps running after the request has settled, such as an agent turn. Routes registered straight on the web server (`ctx.webServer.register`) are outside `/api` and see `null`.
+The service is always on; it reads only this plugin's own session cookie, the same check as `senderContext`. It is `null` outside a request, for a request without an OIDC session (an API client with DSH's own token, when the [/api guard](#the-api-guard) is off), and in work a request started that keeps running after the request has settled, such as an agent turn. Routes registered straight on the web server (`ctx.webServer.register`) are outside `/api` and see `null`.
 
 The name and shape aren't tied to OIDC: another sign-in plugin can provide `requestIdentity` with the same interface, so consumers work with whichever one is installed. Read it with `ctx.get('requestIdentity')` at request time rather than injecting it, if your plugin should also work without it.
+
+### The /api guard
+
+DSH admits `/api` with its own launch-token cookie, which lives 30 days and can't be revoked one browser at a time. With `requireSessionOnApi` (on by default) the plugin also asks for its own live session on every `/api` HTTP request, in DSH's `connection/request` hook, and answers 401 otherwise. So DSH's cookie alone, kept by a browser that signed out or copied off a device, no longer reaches RPC, and signing out or revoking a session cuts it off at once.
+
+The hook covers `/api` HTTP only. The `/api/remote.mux` WebSocket, static assets, `/plugins` and other plugins' routes are outside it and still need the proxy gate in front of DSH. An API client that uses DSH's own token without signing in here is refused too; turn the guard off if you have one.
+
+### Audit log
+
+The plugin records sign-ins, sign-ins the allow policy refused, sign-outs and revoked sessions: what happened, when, whose session, who acted, the client address and User-Agent at sign-in. Addresses are kept as seen. Events are kept for `auditRetentionDays` (90) up to `maxAuditEvents` (5000); with `persistSessions` they survive restarts in `storages/dsh_oidc_audit.json`, otherwise they live in memory.
+
+Each event is also emitted on the Cordis event `dsh-oidc/audit`, so another plugin can forward it, for example as a notification:
+
+```ts
+ctx.on('dsh-oidc/audit', (event) => {
+  // { id, at, type: 'sign-in' | 'sign-in-denied' | 'sign-out' | 'session-revoked',
+  //   person?: { issuer, subject, name? }, by?: { ... }, session?, ip?, userAgent? }
+})
+```
 
 ### Session persistence
 
 By default sessions live only in process memory, so a DSH restart signs everyone out. With `persistSessions: true` they are also kept in DSH's own storage, in `storages/dsh_oidc_sessions.json` under the DSH home, which DSH writes atomically with mode `0600` in a `0700` directory. The routes register only after the stored sessions are loaded; if the store cannot be opened, nothing registers and the proxy keeps denying.
 
-Each record is keyed by the SHA-256 digest of the 256-bit random cookie value, never the value itself, so a copy of the file cannot be turned into a working cookie. It holds the same display claims as the in-memory session, the logout CSRF value, its timestamps, and a fingerprint of the issuer, client ID and allow policy. On startup a record is dropped and deleted when that fingerprint differs (so narrowing the policy and restarting still signs out everyone admitted under the old rules), when it is past the absolute or idle limit as currently configured, or when it is beyond `maxSessions` (the most recently used are kept). Logout deletes the record before it answers. The last-use time is written at most once a minute, so after a restart a session can idle out up to a minute early, never late.
+Each record is keyed by the SHA-256 digest of the 256-bit random cookie value, never the value itself, so a copy of the file cannot be turned into a working cookie. It holds the same display claims as the in-memory session, a random public id used to list and revoke it, the client address and User-Agent at sign-in, the logout CSRF value, its timestamps, and a fingerprint of the issuer, client ID and allow policy. On startup a record is dropped and deleted when that fingerprint differs (so narrowing the policy and restarting still signs out everyone admitted under the old rules), when it is past the absolute or idle limit as currently configured, or when it is beyond `maxSessions` (the most recently used are kept). Logout deletes the record before it answers. The last-use time is written at most once a minute, so after a restart a session can idle out up to a minute early, never late.
 
-See the [deployment guide](docs/deployment.md), the bundle layer [`cordis.patch.yml`](cordis.patch.yml), [`examples/Caddyfile`](examples/Caddyfile), and [`.env.example`](.env.example). Before sign-in, the bare root returns 401 to API clients; a **browser navigation** is redirected to the bundled sign-in page at `/auth/signin`, whose Sign-in button starts OIDC at `/auth/login`. With `directLogin: true` the navigation goes straight to `/auth/login` and the provider instead. The redirect triggers only on `sec-fetch-mode: navigate` (or an HTML-only `Accept` when the header is absent); `fetch`/XHR/WebSocket subrequests keep the plain 401 because Caddy's `forward_auth` subrequest copies no such navigation signals. The page is self-contained inline HTML with a strict CSP and no external assets. The package is not published to npm; install a GitHub release tarball or one built from this checkout. The client secret value stays behind `ctx.credentials`; only its reference name is configuration.
+See the [deployment guide](docs/deployment.md), the bundle layer [`cordis.patch.yml`](cordis.patch.yml), [`examples/Caddyfile`](examples/Caddyfile), and [`.env.example`](.env.example). Before sign-in, the bare root returns 401 to API clients; a **browser navigation** is redirected to the bundled sign-in page at `/auth/signin`, whose Sign-in button starts OIDC at `/auth/login`. With `directLogin: true` the navigation goes straight to `/auth/login` and the provider instead. The redirect triggers only on `sec-fetch-mode: navigate` (or an HTML-only `Accept` when the header is absent); `fetch`/XHR/WebSocket subrequests keep the plain 401 because Caddy's `forward_auth` subrequest copies no such navigation signals. The page is self-contained inline HTML with a strict CSP and no external assets. The package is on npm as `@soffits/dsh-oidc`; GitHub releases carry the same tarball. The client secret value stays behind `ctx.credentials`; only its reference name is configuration.
 
 ## Protocol behavior
 
@@ -165,7 +188,7 @@ See the [deployment guide](docs/deployment.md), the bundle layer [`cordis.patch.
 
 - **Sessions live in process memory by default.** Every DSH restart (upgrade, crash, host reboot) signs everyone out and fails logins in progress; users simply sign in again. `persistSessions: true` keeps finished sign-ins across restarts (logins in progress still fail). Either way this is a single DSH process: replicas would not share sessions.
 - Provider-side account or group changes reach an existing session only at its idle or absolute expiry, or at restart (with `persistSessions`, only when the local allow policy changed too).
-- Logout ends the outer session; DSH's native cookie cannot be revoked on its own, which is why the proxy gate is mandatory.
+- Logout ends the outer session; DSH's native cookie cannot be revoked on its own. The [/api guard](#the-api-guard) stops it at `/api`, but the WebSocket, statics and plugin routes still rely on the proxy gate, which is why it is mandatory.
 
 ## Local development
 
