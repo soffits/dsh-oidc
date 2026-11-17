@@ -26,25 +26,25 @@ describe('bounded one-use state', () => {
 
   it('expires, idles, tampers, deletes, and bounds opaque sessions', async () => {
     const sessions = new BrowserSessions(1000, 100, 1)
-    const session = sessions.create(principal, 100)
+    const session = sessions.create(principal, { kind: 'browser' }, 100)
     expect(session?.value).toMatch(/^[A-Za-z0-9_-]{43}$/u)
     expect(JSON.stringify(session)).not.toContain('subject')
-    expect(sessions.create(principal, 100)).toBeUndefined()
+    expect(sessions.create(principal, { kind: 'browser' }, 100)).toBeUndefined()
     expect(sessions.read(session?.value, 150)?.principal.subject).toBe('s')
     expect(sessions.read(`${session?.value}x`, 151)).toBeUndefined()
     expect(sessions.read(session?.value, 251)).toBeUndefined()
-    const next = sessions.create(principal, 300)
+    const next = sessions.create(principal, { kind: 'browser' }, 300)
     await sessions.delete(next?.value)
     expect(sessions.read(next?.value, 301)).toBeUndefined()
   })
 
   it('distinguishes idle expiry from absolute expiry after activity', () => {
     const idle = new BrowserSessions(10_000, 100, 1)
-    const idleSession = idle.create(principal, 0)
+    const idleSession = idle.create(principal, { kind: 'browser' }, 0)
     expect(idle.read(idleSession?.value, 101)).toBeUndefined()
 
     const absolute = new BrowserSessions(1_000, 800, 1)
-    const absoluteSession = absolute.create(principal, 0)
+    const absoluteSession = absolute.create(principal, { kind: 'browser' }, 0)
     expect(absolute.read(absoluteSession?.value, 700)).toBeDefined()
     expect(absolute.read(absoluteSession?.value, 1_001)).toBeUndefined()
   })

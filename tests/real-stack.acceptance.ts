@@ -898,6 +898,13 @@ describe(
         .map((cookie) => `${cookie.name}=${cookie.value}`)
         .join('; ')
       expect((await directDsh('/', nativeCookieHeader)).status).toBe(200)
+      // DSH's own cookie alone no longer reaches /api: the plugin's guard in
+      // connection/request also wants a live OIDC session.
+      expect((await directDsh('/api/__acceptance_missing__', nativeCookieHeader)).status).toBe(401)
+      const outerCookie = allCookies.find((cookie) => cookie.name === '__Host-dsh-oidc-session')
+      expect(outerCookie).toBeDefined()
+      const bothCookies = `${nativeCookieHeader}; ${outerCookie!.name}=${outerCookie!.value}`
+      expect((await directDsh('/api/__acceptance_missing__', bothCookies)).status).toBe(404)
       await page.goto(`${publicOrigin}/auth/logout`, { waitUntil: 'domcontentloaded' })
       const csrf = await page.locator('input[name="csrf"]').inputValue()
       expect(csrf.length).toBeGreaterThan(20)

@@ -148,7 +148,7 @@ describe('DSH host seam check', () => {
     expect(routes).toEqual([])
   })
 
-  it('always provides requestIdentity and listens for prompts only when senderContext is on', async () => {
+  it('always provides requestIdentity, guards /api by default, and listens for prompts only when senderContext is on', async () => {
     const listened: string[] = []
     const provided: string[] = []
     const make = () =>
@@ -161,12 +161,17 @@ describe('DSH host seam check', () => {
           return () => undefined
         },
       }) as unknown as Context
-    await apply(make(), config)
+    await apply(make(), { ...config, requireSessionOnApi: false })
     expect(provided).toEqual(['requestIdentity'])
     expect(listened).toEqual(['connection/request'])
     listened.length = 0
+    // The /api guard adds one more connection/request listener, on by default.
+    await apply(make(), config)
+    expect(listened).toEqual(['connection/request', 'connection/request'])
+    listened.length = 0
     await apply(make(), { ...config, senderContext: true })
     expect(listened).toEqual([
+      'connection/request',
       'connection/request',
       'connection/request',
       'agent/inbox/inserted',

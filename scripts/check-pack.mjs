@@ -14,6 +14,8 @@ const expectedFiles = [
   'THIRD_PARTY_NOTICES.md',
   'cordis.patch.yml',
   'dist/admission.d.ts',
+  'dist/api-guard.d.ts',
+  'dist/audit.d.ts',
   'dist/compatibility.d.ts',
   'dist/client.js',
   'dist/client/AccountMenu.d.ts',

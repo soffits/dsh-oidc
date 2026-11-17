@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
+import { auditDomain } from '../src/audit.js'
 import { RuntimeCompatibilityError } from '../src/compatibility.js'
 import { resolveConfig } from '../src/config.js'
 import { apply } from '../src/index.js'
@@ -54,7 +55,7 @@ function store(table: MemoryTable, policy = 'p1', maxAge = 10_000, idle = 1_000,
 describe('persisted browser sessions', () => {
   it('writes only the digest of the cookie value and restores the session after a restart', async () => {
     const table = new MemoryTable()
-    const session = store(table).sessions.create(principal, 100)!
+    const session = store(table).sessions.create(principal, { kind: 'browser' }, 100)!
     await settle()
     expect([...table.rows.keys()]).toEqual([digest(session.value)])
     expect(JSON.stringify([...table.rows])).not.toContain(session.value)
@@ -71,7 +72,7 @@ describe('persisted browser sessions', () => {
   it('makes logout revocation durable before it returns', async () => {
     const table = new MemoryTable()
     const { sessions } = store(table)
-    const session = sessions.create(principal, 100)!
+    const session = sessions.create(principal, { kind: 'browser' }, 100)!
     await settle()
     await sessions.delete(session.value)
     expect(table.rows.size).toBe(0)
@@ -114,8 +115,8 @@ describe('persisted browser sessions', () => {
   it('keeps the most recently used sessions when the cap shrank', async () => {
     const table = new MemoryTable()
     const first = store(table).sessions
-    const older = first.create(principal, 100)!
-    const newer = first.create(principal, 200)!
+    const older = first.create(principal, { kind: 'browser' }, 100)!
+    const newer = first.create(principal, { kind: 'browser' }, 200)!
     await settle()
     const capped = store(table, 'p1', 10_000, 1_000, 1).sessions
     expect(await capped.restore(300)).toBe(1)
@@ -127,7 +128,7 @@ describe('persisted browser sessions', () => {
   it('writes the last-use time at most once per interval, so a restart can only idle out early', async () => {
     const table = new MemoryTable()
     const { sessions } = store(table, 'p1', 1_000_000, 200_000)
-    const session = sessions.create(principal, 0)!
+    const session = sessions.create(principal, { kind: 'browser' }, 0)!
     await settle()
     expect(table.puts).toBe(1)
     sessions.read(session.value, LAST_USED_WRITE_INTERVAL - 1)
@@ -142,13 +143,13 @@ describe('persisted browser sessions', () => {
   it('deletes expired sessions from the store when they are read or pruned', async () => {
     const table = new MemoryTable()
     const { sessions } = store(table, 'p1', 10_000, 100)
-    const read = sessions.create(principal, 0)!
+    const read = sessions.create(principal, { kind: 'browser' }, 0)!
     await settle()
     expect(sessions.read(read.value, 500)).toBeUndefined()
     await settle()
     expect(table.rows.size).toBe(0)
-    sessions.create(principal, 1_000)
-    sessions.create(principal, 2_000)
+    sessions.create(principal, { kind: 'browser' }, 1_000)
+    sessions.create(principal, { kind: 'browser' }, 2_000)
     await settle()
     expect(table.rows.size).toBe(1)
   })
@@ -157,7 +158,7 @@ describe('persisted browser sessions', () => {
     const table = new MemoryTable()
     table.fail = true
     const { sessions, onError } = store(table)
-    const session = sessions.create(principal, 0)!
+    const session = sessions.create(principal, { kind: 'browser' }, 0)!
     await settle()
     expect(onError).toHaveBeenCalledTimes(1)
     expect(sessions.read(session.value, 10)).toBeDefined()
@@ -272,21 +273,23 @@ describe('plugin wiring', () => {
   it('opens the session domain, restores it, and only then registers routes', async () => {
     const table = new MemoryTable()
     const close = vi.fn(async () => undefined)
-    let opened: unknown
+    const opened: unknown[] = []
     const facility = {
       open: async (spec: unknown) => {
-        opened = spec
-        return { table: () => table, close }
+        opened.push(spec)
+        return spec === auditDomain
+          ? { table: () => new Map(), close }
+          : { table: () => table, close }
       },
     }
     const { ctx, routes, injected, disposers, done } = host(facility)
     await apply(ctx, config)
     expect(injected).toEqual([['storageDomain']])
     await done()
-    expect(opened).toBe(sessionDomain)
+    expect(opened).toEqual([sessionDomain, auditDomain])
     expect(routes).toHaveLength(6)
     for (const dispose of disposers) await dispose()
-    expect(close).toHaveBeenCalledOnce()
+    expect(close).toHaveBeenCalledTimes(2)
   })
 
   it('registers no route when the storage service lacks open()', async () => {
@@ -308,5 +311,89 @@ describe('plugin wiring', () => {
     await apply(ctx, { ...config, persistSessions: false })
     expect(injected).toEqual([])
     expect(routes).toHaveLength(6)
+  })
+})
+
+describe('session metadata in the store', () => {
+  it('persists kind, user agent and address, and lists sessions without CSRF values', async () => {
+    const table = new MemoryTable()
+    const { sessions } = store(table)
+    const created = sessions.create(
+      principal,
+      { kind: 'browser', userAgent: 'Safari/18', ip: '198.51.100.7' },
+      100,
+    )!
+    await settle()
+    const record = table.rows.get(digest(created.value))!
+    expect(parsePersistedSession(record)).toMatchObject({
+      id: created.id,
+      kind: 'browser',
+      userAgent: 'Safari/18',
+      ip: '198.51.100.7',
+    })
+    const restarted = store(table).sessions
+    await restarted.restore(200)
+    const [listed] = restarted.list(200)
+    expect(listed).toMatchObject({ id: created.id, kind: 'browser', ip: '198.51.100.7' })
+    expect(listed).not.toHaveProperty('csrf')
+  })
+
+  it('gives a record from an older release an id and kind on restore and writes it back', async () => {
+    const table = new MemoryTable()
+    const key = digest('legacy-cookie-value-legacy-cookie-value-123')
+    table.rows.set(key, {
+      principal,
+      issuedAt: 100,
+      lastUsedAt: 100,
+      expiresAt: 5_000,
+      csrf: 'c'.repeat(43),
+      policy: 'p1',
+    })
+    const { sessions } = store(table)
+    expect(await sessions.restore(200)).toBe(1)
+    await settle()
+    const [listed] = sessions.list(200)
+    expect(listed?.kind).toBe('browser')
+    expect(listed?.id).toMatch(/^[A-Za-z0-9_-]{22}$/u)
+    expect(table.rows.get(key)?.id).toBe(listed?.id)
+  })
+
+  it('makes revoke-by-id durable and tells listeners why each session ended', async () => {
+    const table = new MemoryTable()
+    const { sessions } = store(table)
+    const ended: string[] = []
+    sessions.onEnd((session, reason) => ended.push(`${session.id}:${reason}`))
+    const a = sessions.create(principal, { kind: 'browser' }, 100)!
+    const b = sessions.create(principal, { kind: 'browser' }, 100)!
+    const c = sessions.create(principal, { kind: 'browser' }, 100)!
+    await settle()
+    expect((await sessions.revoke(a.id, 200))?.id).toBe(a.id)
+    expect(table.rows.has(digest(a.value))).toBe(false)
+    await sessions.delete(b.value)
+    sessions.sweep(100 + 1_000)
+    await settle()
+    expect(ended).toEqual([`${a.id}:revoked`, `${b.id}:logout`, `${c.id}:expired`])
+    expect(await sessions.revoke(a.id, 200)).toBeUndefined()
+  })
+
+  it('rejects stored metadata of the wrong shape', () => {
+    const valid = {
+      principal,
+      issuedAt: 1,
+      lastUsedAt: 1,
+      expiresAt: 2,
+      csrf: 'c'.repeat(43),
+      policy: 'p',
+    }
+    expect(parsePersistedSession(valid)).toEqual(valid)
+    for (const broken of [
+      { id: 'short' },
+      { kind: 'robot' },
+      { ip: '999.1.1.1' },
+      { userAgent: 'x'.repeat(513) },
+    ])
+      expect(() => parsePersistedSession({ ...valid, ...broken })).toThrow(
+        'invalid dsh-oidc session record',
+      )
   })
 })
