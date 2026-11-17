@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveConfig } from '../src/config.js'
+import { parseListen, resolveConfig } from '../src/config.js'
 import { authorizeClaims } from '../src/policy.js'
 
 const base = {
@@ -190,5 +190,60 @@ describe('configuration and policy', () => {
         ),
       ).toBeUndefined()
     }
+  })
+})
+
+describe('gateway mode configuration', () => {
+  const base = {
+    issuer: 'https://id.example',
+    clientId: 'client',
+    publicOrigin: 'https://dsh.example',
+    allowAnyUser: true,
+  }
+
+  it('defaults to forward-auth and needs a listen address for gateway', () => {
+    expect(resolveConfig(base).mode).toBe('forward-auth')
+    expect(resolveConfig(base).gateway).toBeUndefined()
+    expect(() => resolveConfig({ ...base, mode: 'gateway' })).toThrow(/gatewayListen/u)
+    expect(
+      resolveConfig({ ...base, mode: 'gateway', gatewayListen: '0.0.0.0:3080' }).gateway,
+    ).toEqual({ host: '0.0.0.0', port: 3080, publicPaths: [] })
+    expect(
+      resolveConfig({
+        ...base,
+        mode: 'gateway',
+        gatewayListen: '[::1]:8443',
+        gatewayTlsCertFile: '/c.pem',
+        gatewayTlsKeyFile: '/k.pem',
+        gatewayPublicPaths: ['/hooks/*', '/ping'],
+      }).gateway,
+    ).toEqual({
+      host: '::1',
+      port: 8443,
+      tls: { certFile: '/c.pem', keyFile: '/k.pem' },
+      publicPaths: ['/hooks/*', '/ping'],
+    })
+  })
+
+  it('rejects ambiguous listen addresses, half a TLS pair and unsafe public paths', () => {
+    const gateway = { ...base, mode: 'gateway' as const }
+    for (const listen of [
+      '3080',
+      'dsh.example:3080',
+      '127.0.0.1:0',
+      '127.0.0.1:70000',
+      '[127.0.0.1]:1',
+      '::1:80',
+    ])
+      expect(() => parseListen(listen), listen).toThrow(/gatewayListen/u)
+    expect(() =>
+      resolveConfig({ ...gateway, gatewayListen: '127.0.0.1:1', gatewayTlsCertFile: '/c.pem' }),
+    ).toThrow(/go together/u)
+    for (const path of ['hooks', '/', '/*', '/a/*/b', '/a/../b', '/a/./b'])
+      expect(
+        () =>
+          resolveConfig({ ...gateway, gatewayListen: '127.0.0.1:1', gatewayPublicPaths: [path] }),
+        path,
+      ).toThrow(/gatewayPublicPaths/u)
   })
 })

@@ -231,3 +231,28 @@ describe('DSH host seam check', () => {
     }
   })
 })
+
+describe('gateway mode wiring', () => {
+  const gateway = { ...config, mode: 'gateway' as const, gatewayListen: '127.0.0.1:39999' }
+
+  it('refuses to start while DSH itself listens beyond loopback', async () => {
+    const routes: unknown[] = []
+    const ctx = host({
+      logger: { info: () => undefined, warn: () => undefined },
+      webServer: {
+        host: '0.0.0.0',
+        getOrigin: () => 'http://0.0.0.0:3080',
+        register: (route: unknown) => routes.push(route),
+      },
+    }) as unknown as Context
+    await expect(apply(ctx, gateway)).rejects.toThrow(/loopback/u)
+    expect(routes).toEqual([])
+  })
+
+  it('names a DSH without getOrigin as unsupported', async () => {
+    const ctx = host({
+      webServer: { host: '127.0.0.1', register: () => () => undefined },
+    }) as unknown as Context
+    await expect(apply(ctx, gateway)).rejects.toBeInstanceOf(RuntimeCompatibilityError)
+  })
+})

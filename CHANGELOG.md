@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0-alpha.12
+
+- Add gateway mode (`mode: gateway`, `DSH_OIDC_MODE`): the plugin opens its own listener (`gatewayListen`, optionally with its own TLS certificate) and is the only way into DSH, which moves to loopback; the plugin refuses to start otherwise. Every request and WebSocket upgrade needs a live session except the sign-in routes and `gatewayPublicPaths`. The gateway mints and keeps DSH's own cookie itself, so browsers never get it or the launch token, and it closes a session's WebSockets and event streams when the session signs out, is revoked or expires. `forward-auth` stays the default.
+- The acceptance suite gains a run with no proxy at all: Chromium talks to the gateway's own TLS listener in front of a real DSH, checks that every cookieless path and upgrade is refused, signs in, and revokes one browser's session from another to see its WebSocket close.
+
 ## 0.3.0-alpha.11
 
 - Add a **Sign-in** page to DSH's Settings: every signed-in session (this device first, then your other sessions, then everyone else's) with the person, browser and system, address, and when it signed in, was last active and expires. Each can be signed out from there, and "Sign out my other sessions" ends the rest of yours. Since everyone signed in is a full DSH owner, anyone can end anyone's session; the page says so. Below that, a read-only summary of the provider, who may sign in, lifetimes and which fields the `DSH_OIDC_*` environment sets, and the recent audit events.

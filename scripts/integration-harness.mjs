@@ -3,8 +3,11 @@
 // browser scenarios in tests/real-stack.acceptance.ts behind Caddy and a
 // synthetic OIDC issuer. Nothing outside the temporary run root is touched.
 //
-// DSH_OIDC_CADDY_BIN    Caddy binary (required)
+// DSH_OIDC_CADDY_BIN    Caddy binary (required, except with --gateway)
 // DSH_OIDC_DSH_VERSION  DSH version or dist-tag to test (default: latest)
+//
+// With --gateway it runs tests/gateway.acceptance.ts instead: gateway mode with
+// no proxy in front, the plugin's own TLS listener facing Chromium directly.
 import { execFileSync, spawnSync } from 'node:child_process'
 import {
   chmodSync,
@@ -20,16 +23,20 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { npmPack } from './npm-pack.mjs'
 
+const gatewayRun = process.argv.includes('--gateway')
 const caddy = process.env.DSH_OIDC_CADDY_BIN
-if (caddy === undefined || caddy === '') {
+if (!gatewayRun && (caddy === undefined || caddy === '')) {
   throw new Error(
     'ACCEPTANCE_BLOCKED: set DSH_OIDC_CADDY_BIN to a Caddy v2 binary; skip is not pass',
   )
 }
-const caddyVersion = execFileSync(caddy, ['version'], { encoding: 'utf8' }).trim()
-execFileSync(caddy, ['adapt', '--config', 'examples/Caddyfile', '--adapter', 'caddyfile'], {
-  stdio: ['ignore', 'ignore', 'inherit'],
-})
+let caddyVersion = 'not used'
+if (!gatewayRun) {
+  caddyVersion = execFileSync(caddy, ['version'], { encoding: 'utf8' }).trim()
+  execFileSync(caddy, ['adapt', '--config', 'examples/Caddyfile', '--adapter', 'caddyfile'], {
+    stdio: ['ignore', 'ignore', 'inherit'],
+  })
+}
 
 const manifest = JSON.parse(readFileSync('package.json', 'utf8'))
 const requested = process.env.DSH_OIDC_DSH_VERSION || 'latest'
@@ -65,9 +72,10 @@ function run(command, args, options = {}) {
 }
 
 function vitest(environment, expectFailure = false) {
+  const config = gatewayRun ? 'tests/vitest.gateway.config.ts' : 'tests/vitest.acceptance.config.ts'
   const result = spawnSync(
     process.execPath,
-    ['node_modules/vitest/vitest.mjs', 'run', '--config', 'tests/vitest.acceptance.config.ts'],
+    ['node_modules/vitest/vitest.mjs', 'run', '--config', config],
     { cwd: process.cwd(), encoding: 'utf8', env: environment, maxBuffer: 32 * 1024 * 1024 },
   )
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
@@ -141,18 +149,20 @@ try {
 
   const testEnvironment = {
     ...environment,
-    DSH_OIDC_CADDY_BIN: caddy,
+    ...(gatewayRun ? {} : { DSH_OIDC_CADDY_BIN: caddy }),
     DSH_OIDC_RUN_ROOT: runRoot,
     DSH_OIDC_RUNTIME: runtime,
     DSH_OIDC_DSH_VERSION: dshVersion,
   }
   vitest(testEnvironment)
-  vitest({ ...testEnvironment, DSH_OIDC_CONTROLLED_SETUP_FAILURE: '1' }, true)
-  const residue = ['stack', 'failure-stack'].filter((name) => existsSync(join(runRoot, name)))
+  if (!gatewayRun) vitest({ ...testEnvironment, DSH_OIDC_CONTROLLED_SETUP_FAILURE: '1' }, true)
+  const residue = ['stack', 'failure-stack', 'gateway-stack'].filter((name) =>
+    existsSync(join(runRoot, name)),
+  )
   if (residue.length !== 0)
     throw new Error(`acceptance stack residue remained: ${residue.join(', ')}`)
   console.log(
-    `acceptance passed: DSH ${dshVersion} (${String(dshPackages)} packages, one release); ${manifest.name} via dsh plugin add; Node ${process.version}; Caddy ${caddyVersion}`,
+    `${gatewayRun ? 'gateway ' : ''}acceptance passed: DSH ${dshVersion} (${String(dshPackages)} packages, one release); ${manifest.name} via dsh plugin add; Node ${process.version}; Caddy ${caddyVersion}`,
   )
 } finally {
   rmSync(runRoot, { recursive: true, force: true })

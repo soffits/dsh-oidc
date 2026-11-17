@@ -15,6 +15,12 @@ With Caddy and DSH on one host, bind DSH to `127.0.0.1` and keep the default `tr
 
 When Caddy runs in another container, DSH has to listen on its container address (DSH rejects wildcard binds such as `0.0.0.0`; pass the concrete address, for example from `hostname -i`). Put the two containers on a private network that nothing else joins, publish no DSH port to the host, and set `trustedProxies` to Caddy's address or that network, for example `DSH_OIDC_TRUSTED_PROXIES='["172.18.0.0/16"]'`. Without it `/auth/login` answers 403, because the client-address header from a non-trusted peer is ignored. Point the Caddyfile's `127.0.0.1:3080` upstreams at the DSH container name and port. The same applies to the nginx and Traefik examples.
 
+### Gateway mode instead of a proxy check
+
+With `DSH_OIDC_MODE=gateway` no proxy has to ask `/auth/check`. Start DSH on loopback (`--host 127.0.0.1` with some other port, for example 3081) and set `DSH_OIDC_GATEWAY_LISTEN` to the address clients or your TLS proxy reach, such as `0.0.0.0:3080`. Keep DSH's `--trusted-host` set to the public authority, since the gateway forwards the public `Host`. Behind a TLS proxy, a plain `reverse_proxy` to the gateway is enough; keep setting `X-Dsh-Oidc-Client-Ip` there and list the proxy in `trustedProxies`, so the login rate limit sees real addresses. Without a proxy, give the gateway `DSH_OIDC_GATEWAY_TLS_CERT` and `DSH_OIDC_GATEWAY_TLS_KEY`.
+
+Switching an existing install: put the plugin version with gateway mode in place first, then change DSH's listen address and the plugin's environment together, then reduce the proxy to a plain `reverse_proxy`. To go back, revert those three. If the gateway fails to start, nothing answers on its address and the log says why.
+
 ## Install into a profile
 
 The package is a DSH bundle: its own `cordis.patch.yml` adds the `soffits-oidc` row (and turns off the startup bearer-URL print), so the profile needs no row of its own. Installing it enables the bundle, which records it in the profile's `package.json` under `dsh.profile.bundles`. It then shows on the sidebar **Plugins** page with its title, description and switch, and its row appears under **Settings → Built-in plugins**.

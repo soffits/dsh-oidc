@@ -32,6 +32,11 @@ export interface Config {
   requireSessionOnApi?: boolean
   auditRetentionDays?: number
   maxAuditEvents?: number
+  mode?: 'forward-auth' | 'gateway'
+  gatewayListen?: string
+  gatewayTlsCertFile?: string
+  gatewayTlsKeyFile?: string
+  gatewayPublicPaths?: string[]
 }
 
 /** Loopback only: a proxy on the same host. */
@@ -81,6 +86,11 @@ export const Config: z<Config> = z.object({
   requireSessionOnApi: z.boolean().default(true),
   auditRetentionDays: z.natural().min(1).max(3650).default(90),
   maxAuditEvents: z.natural().min(100).max(100_000).default(5_000),
+  mode: z.union([z.const('forward-auth'), z.const('gateway')]).default('forward-auth'),
+  gatewayListen: z.string(),
+  gatewayTlsCertFile: z.string(),
+  gatewayTlsKeyFile: z.string(),
+  gatewayPublicPaths: z.array(String).default([]),
 })
 
 export interface AuthorizationPolicy {
@@ -123,6 +133,63 @@ export interface ResolvedConfig {
   readonly requireSessionOnApi: boolean
   readonly auditRetentionDays: number
   readonly maxAuditEvents: number
+  /** `forward-auth`: a proxy asks `/auth/check`. `gateway`: this plugin's own listener is the way in. */
+  readonly mode: 'forward-auth' | 'gateway'
+  readonly gateway?: GatewayConfig
+}
+
+export interface GatewayConfig {
+  readonly host: string
+  readonly port: number
+  readonly tls?: { readonly certFile: string; readonly keyFile: string }
+  /** Exact paths, or prefixes ending in `*`, passed to DSH without a session (webhooks). */
+  readonly publicPaths: readonly string[]
+}
+
+/** `host:port`, `[v6]:port`; the host must be an IP literal or `localhost`. */
+export function parseListen(value: string): { host: string; port: number } {
+  const match = /^(?:\[([^\]]+)\]|([^:[\]]+)):(\d{1,5})$/u.exec(value)
+  const host = match?.[1] ?? match?.[2]
+  const port = Number(match?.[3])
+  if (
+    host === undefined ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65_535 ||
+    (isIP(host) === 0 && host !== 'localhost') ||
+    (match?.[1] !== undefined && isIP(host) !== 6)
+  )
+    throw new Error('dsh-oidc: gatewayListen must be host:port with an IP address (or [v6]:port)')
+  return { host, port }
+}
+
+function gatewayConfig(config: Config): GatewayConfig {
+  if (config.gatewayListen === undefined || config.gatewayListen === '')
+    throw new Error('dsh-oidc: mode gateway needs gatewayListen (DSH_OIDC_GATEWAY_LISTEN)')
+  const { host, port } = parseListen(config.gatewayListen)
+  const cert = config.gatewayTlsCertFile
+  const key = config.gatewayTlsKeyFile
+  if ((cert === undefined || cert === '') !== (key === undefined || key === ''))
+    throw new Error('dsh-oidc: gatewayTlsCertFile and gatewayTlsKeyFile go together')
+  const publicPaths = exactStrings(config.gatewayPublicPaths, 'gatewayPublicPaths')
+  for (const path of publicPaths) {
+    const base = path.endsWith('*') ? path.slice(0, -1) : path
+    if (
+      !base.startsWith('/') ||
+      base.includes('*') ||
+      base === '/' ||
+      /\/\.\.?(?:\/|$)/u.test(base)
+    )
+      throw new Error(
+        `dsh-oidc: gatewayPublicPaths entry ${JSON.stringify(path)} must be an absolute path below /, optionally ending in *`,
+      )
+  }
+  return {
+    host,
+    port,
+    ...(cert === undefined || cert === '' ? {} : { tls: { certFile: cert, keyFile: key! } }),
+    publicPaths,
+  }
 }
 
 /** Matches socket peer addresses against the configured proxy addresses and CIDR ranges. */
@@ -311,5 +378,7 @@ export function resolveConfig(config: Config): ResolvedConfig {
     requireSessionOnApi: config.requireSessionOnApi ?? true,
     auditRetentionDays: config.auditRetentionDays ?? 90,
     maxAuditEvents: config.maxAuditEvents ?? 5_000,
+    mode: config.mode ?? 'forward-auth',
+    ...(config.mode === 'gateway' ? { gateway: gatewayConfig(config) } : {}),
   }
 }

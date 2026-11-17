@@ -126,3 +126,26 @@ describe('DSH_OIDC_* environment precedence', () => {
     expect(resolveConfig(applyEnvironment({}, readEnvironment(env))).clientId).toBe('env-client')
   })
 })
+
+describe('gateway environment', () => {
+  it('reads the mode, listen address, TLS files and public paths', () => {
+    const layer = readEnvironment({
+      DSH_OIDC_MODE: 'gateway',
+      DSH_OIDC_GATEWAY_LISTEN: '0.0.0.0:3080',
+      DSH_OIDC_GATEWAY_TLS_CERT: '/c.pem',
+      DSH_OIDC_GATEWAY_TLS_KEY: '/k.pem',
+      DSH_OIDC_GATEWAY_PUBLIC_PATHS: '["/hooks/*"]',
+    })
+    expect(layer.values).toEqual({
+      mode: 'gateway',
+      gatewayListen: '0.0.0.0:3080',
+      gatewayTlsCertFile: '/c.pem',
+      gatewayTlsKeyFile: '/k.pem',
+      gatewayPublicPaths: ['/hooks/*'],
+    })
+    expect(() => readEnvironment({ DSH_OIDC_MODE: 'native' })).toThrow(/DSH_OIDC_MODE/u)
+    expect(() => readEnvironment({ DSH_OIDC_GATEWAY_PUBLIC_PATHS: '/hooks' })).toThrow(
+      /DSH_OIDC_GATEWAY_PUBLIC_PATHS/u,
+    )
+  })
+})

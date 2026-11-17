@@ -61,8 +61,35 @@ function normalizedIp(value: string): string | undefined {
   return undefined
 }
 
+/**
+ * Client addresses the gateway already established for a request it handles
+ * in process, so admission doesn't read the header from the gateway's peer.
+ */
+const gatewayClientIps = new WeakMap<IncomingMessage, string>()
+
+export function setGatewayClientIp(req: IncomingMessage, ip: string): void {
+  gatewayClientIps.set(req, ip)
+}
+
+/**
+ * The client's address: the proxy-set header when the socket peer is a
+ * trusted proxy, else (only when `peerFallback`) the socket peer itself.
+ */
+export function clientAddress(
+  req: IncomingMessage,
+  proxies: TrustedProxies,
+  peerFallback: boolean,
+): string | undefined {
+  const forwarded = trustedClientIp(req, proxies)
+  if (forwarded !== undefined || !peerFallback) return forwarded
+  const peer = req.socket.remoteAddress
+  return peer === undefined ? undefined : normalizedIp(peer)
+}
+
 /** The proxy-set client address, believed only when the socket peer is a configured trusted proxy. */
 function trustedClientIp(req: IncomingMessage, proxies: TrustedProxies): string | undefined {
+  const established = gatewayClientIps.get(req)
+  if (established !== undefined) return established
   const peer = req.socket.remoteAddress
   if (peer === undefined || !proxies.has(peer)) return undefined
   const raw = req.headers[CLIENT_IP_HEADER]
@@ -135,7 +162,7 @@ function formBody(req: IncomingMessage, maximum = 16_384): Promise<URLSearchPara
 
 const SIGNIN_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Sign in · DSH</title><style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#111;color:#eee}main{text-align:center;padding:2rem}a{display:inline-block;margin-top:1rem;padding:.6rem 1.4rem;background:#2563eb;color:#fff;border-radius:.5rem;text-decoration:none;font-weight:600}</style></head><body><main><h1>DSH</h1><p>Authentication required.</p><a href="/auth/login?nav=1" rel="nofollow">Sign in</a></main></body></html>`
 
-function wantsNavigation(req: IncomingMessage): boolean {
+export function wantsNavigation(req: IncomingMessage): boolean {
   const fetchMode = header(req, 'sec-fetch-mode')
   if (fetchMode !== undefined) return fetchMode === 'navigate'
   const accept = header(req, 'accept') ?? ''
@@ -307,7 +334,13 @@ export class OidcAdmission {
       // a plain redirect keeps the whole chain cross-site and the browser never
       // sends DSH's SameSite=Strict native cookie after the token exchange.
       // A same-origin page that starts a fresh navigation makes it same-site.
-      bootstrapPage(res, this.connection.authenticatedUrl(this.config.publicOrigin.href), [
+      // In gateway mode the browser never holds DSH's cookie: the gateway adds
+      // its own on the way in, so the page continues to the app itself.
+      const next =
+        this.config.mode === 'gateway'
+          ? this.config.publicOrigin.href
+          : this.connection.authenticatedUrl(this.config.publicOrigin.href)
+      bootstrapPage(res, next, [
         secureCookie(SESSION_COOKIE, session.value, this.config.sessionMaxAgeSeconds),
         expiredCookie(TRANSACTION_COOKIE),
       ])

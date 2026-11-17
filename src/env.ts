@@ -21,6 +21,11 @@ export const ENVIRONMENT_FIELDS = {
   DSH_OIDC_SENDER_CONTEXT: 'senderContext',
   DSH_OIDC_PERSIST_SESSIONS: 'persistSessions',
   DSH_OIDC_REQUIRE_SESSION_ON_API: 'requireSessionOnApi',
+  DSH_OIDC_MODE: 'mode',
+  DSH_OIDC_GATEWAY_LISTEN: 'gatewayListen',
+  DSH_OIDC_GATEWAY_TLS_CERT: 'gatewayTlsCertFile',
+  DSH_OIDC_GATEWAY_TLS_KEY: 'gatewayTlsKeyFile',
+  DSH_OIDC_GATEWAY_PUBLIC_PATHS: 'gatewayPublicPaths',
 } as const satisfies Record<string, keyof Config>
 
 export type EnvironmentVariable = keyof typeof ENVIRONMENT_FIELDS
@@ -124,6 +129,21 @@ export function readEnvironment(
   const requireSession = read('DSH_OIDC_REQUIRE_SESSION_ON_API')
   if (requireSession !== undefined)
     values.requireSessionOnApi = boolean('DSH_OIDC_REQUIRE_SESSION_ON_API', requireSession)
+  const mode = read('DSH_OIDC_MODE')
+  if (mode !== undefined) {
+    if (mode !== 'forward-auth' && mode !== 'gateway')
+      throw new Error('dsh-oidc: DSH_OIDC_MODE must be forward-auth or gateway')
+    values.mode = mode
+  }
+  const listen = read('DSH_OIDC_GATEWAY_LISTEN')
+  if (listen !== undefined) values.gatewayListen = listen
+  const cert = read('DSH_OIDC_GATEWAY_TLS_CERT')
+  if (cert !== undefined) values.gatewayTlsCertFile = cert
+  const key = read('DSH_OIDC_GATEWAY_TLS_KEY')
+  if (key !== undefined) values.gatewayTlsKeyFile = key
+  const publicPaths = read('DSH_OIDC_GATEWAY_PUBLIC_PATHS')
+  if (publicPaths !== undefined)
+    values.gatewayPublicPaths = stringArray('DSH_OIDC_GATEWAY_PUBLIC_PATHS', publicPaths)
   const fields = (Object.values(ENVIRONMENT_FIELDS) as EnvironmentField[]).filter(
     (field) => values[field] !== undefined,
   )
