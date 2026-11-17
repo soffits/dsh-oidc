@@ -56,6 +56,7 @@ export interface SignInStatus {
   readonly requireSessionOnApi: boolean
   readonly senderContext: boolean
   readonly directLogin: boolean
+  readonly localPerson?: string
   readonly environment: readonly string[]
   readonly audit: readonly AuditEntry[]
 }

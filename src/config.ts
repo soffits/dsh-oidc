@@ -37,6 +37,7 @@ export interface Config {
   gatewayTlsCertFile?: string
   gatewayTlsKeyFile?: string
   gatewayPublicPaths?: string[]
+  localPerson?: string
 }
 
 /** Loopback only: a proxy on the same host. */
@@ -91,6 +92,7 @@ export const Config: z<Config> = z.object({
   gatewayTlsCertFile: z.string(),
   gatewayTlsKeyFile: z.string(),
   gatewayPublicPaths: z.array(String).default([]),
+  localPerson: z.string(),
 })
 
 export interface AuthorizationPolicy {
@@ -136,6 +138,8 @@ export interface ResolvedConfig {
   /** `forward-auth`: a proxy asks `/auth/check`. `gateway`: this plugin's own listener is the way in. */
   readonly mode: 'forward-auth' | 'gateway'
   readonly gateway?: GatewayConfig
+  /** Who a request from this host itself, not through the gate, is taken to be; unset refuses such requests. */
+  readonly localPerson?: string
 }
 
 export interface GatewayConfig {
@@ -161,6 +165,14 @@ export function parseListen(value: string): { host: string; port: number } {
   )
     throw new Error('dsh-oidc: gatewayListen must be host:port with an IP address (or [v6]:port)')
   return { host, port }
+}
+
+function localPerson(value: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$/u.test(value))
+    throw new Error(
+      'dsh-oidc: localPerson must be 1-64 letters, digits, dots, dashes, underscores or @',
+    )
+  return value
 }
 
 function gatewayConfig(config: Config): GatewayConfig {
@@ -380,5 +392,8 @@ export function resolveConfig(config: Config): ResolvedConfig {
     maxAuditEvents: config.maxAuditEvents ?? 5_000,
     mode: config.mode ?? 'forward-auth',
     ...(config.mode === 'gateway' ? { gateway: gatewayConfig(config) } : {}),
+    ...(config.localPerson === undefined || config.localPerson === ''
+      ? {}
+      : { localPerson: localPerson(config.localPerson) }),
   }
 }

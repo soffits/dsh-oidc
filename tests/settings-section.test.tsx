@@ -74,6 +74,7 @@ const status: SignInStatus = {
   requireSessionOnApi: true,
   senderContext: false,
   directLogin: false,
+  localPerson: 'helper',
   environment: ['DSH_OIDC_ISSUER', 'DSH_OIDC_CLIENT_ID'],
   audit: [
     {
@@ -123,6 +124,7 @@ describe('Sign-in settings page', () => {
     expect(text).toContain('Emails: ada@example.test')
     expect(text).toContain('Groups (all of): ops')
     expect(text).toContain('DSH_OIDC_ISSUER, DSH_OIDC_CLIENT_ID')
+    expect(text).toContain('Requests from this machine act ashelper')
     expect(text).toContain('7 d')
     expect(text).toContain('6 h')
     expect(text).toContain('Session ended · bo (by ada)')

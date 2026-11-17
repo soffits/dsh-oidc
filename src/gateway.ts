@@ -370,8 +370,11 @@ export class Gateway {
     const target = normalizedTarget(req.url)
     if (target === undefined) return plain(res, 400, 'bad request\n')
     const path = target.split('?', 1)[0]!
+    // Every forwarded request carries the client address, which is also what
+    // tells DSH's side it came through the gate rather than from this host.
     const ip = this.host.clientIp(req)
-    if (ip !== undefined) this.host.markClientIp(req, ip)
+    if (ip === undefined) return plain(res, 400, 'bad request\n')
+    this.host.markClientIp(req, ip)
     const route = this.host.routes.get(path)
     if (route !== undefined) {
       void Promise.resolve(route(req, res)).catch(() => {
@@ -400,7 +403,7 @@ export class Gateway {
     req: IncomingMessage,
     res: ServerResponse,
     target: string,
-    ip: string | undefined,
+    ip: string,
     session: SessionView | undefined,
   ): void {
     const upstream = this.host.upstream()
@@ -441,6 +444,7 @@ export class Gateway {
     if (this.host.routes.has(path) || path.startsWith('/auth/') || path === '/connect')
       return rawResponse(socket, 404, 'Not Found')
     const ip = this.host.clientIp(req)
+    if (ip === undefined) return rawResponse(socket, 400, 'Bad Request')
     let session: SessionView | undefined
     if (!isPublicPath(path, this.config.publicPaths)) {
       session = this.host.session(req)

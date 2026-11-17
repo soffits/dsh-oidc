@@ -403,7 +403,10 @@ export class OidcAdmission {
    * End the session with public id `id` on behalf of `actor`, durably.
    * @returns the revoked session, or undefined when none is live with that id.
    */
-  async revokeSession(id: string, actor: SessionView): Promise<SessionSummary | undefined> {
+  async revokeSession(
+    id: string,
+    actor: { readonly principal: Principal },
+  ): Promise<SessionSummary | undefined> {
     const revoked = await this.sessions.revoke(id)
     if (revoked === undefined) return undefined
     this.audit.record({

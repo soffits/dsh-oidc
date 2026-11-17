@@ -1,6 +1,14 @@
 import type { AuditEvent } from './audit.js'
 import type { ResolvedConfig } from './config.js'
+import type { Principal } from './policy.js'
 import type { SessionKind, SessionSummary, SessionView } from './state.js'
+
+/** Whoever makes a request: an OIDC session, or the configured local person. */
+export interface Actor {
+  /** The session's public id; empty for local access, which has no session. */
+  readonly id: string
+  readonly principal: Principal
+}
 
 /**
  * The plugin's own `/api` endpoints for its settings page: who is signed in
@@ -24,7 +32,7 @@ export const STATUS_AUDIT_EVENTS = 50
 export interface SessionAuthority {
   sessionFromCookie(cookie: string | null | undefined): SessionView | undefined
   listSessions(): SessionSummary[]
-  revokeSession(id: string, actor: SessionView): Promise<SessionSummary | undefined>
+  revokeSession(id: string, actor: Actor): Promise<SessionSummary | undefined>
   readonly audit: { recent(limit: number): AuditEvent[] }
 }
 
@@ -73,6 +81,8 @@ export interface StatusView {
   readonly requireSessionOnApi: boolean
   readonly senderContext: boolean
   readonly directLogin: boolean
+  /** Who a request from this host itself is taken to be, when set. */
+  readonly localPerson?: string
   /** `DSH_OIDC_*` variables that set a field; the profile can't change those. */
   readonly environment: readonly string[]
   readonly audit: readonly AuditEvent[]
@@ -111,10 +121,7 @@ function samePerson(
 }
 
 /** The sessions list as the caller sees it: their own first, then everyone else's. */
-export function sessionEntries(
-  sessions: readonly SessionSummary[],
-  actor: SessionView,
-): SessionEntry[] {
+export function sessionEntries(sessions: readonly SessionSummary[], actor: Actor): SessionEntry[] {
   const entries = sessions.map((session): SessionEntry => {
     const { principal } = session
     const name = principal.username ?? principal.displayName ?? principal.email
@@ -169,6 +176,7 @@ export function statusView(
     requireSessionOnApi: config.requireSessionOnApi,
     senderContext: config.senderContext,
     directLogin: config.directLogin,
+    ...(config.localPerson === undefined ? {} : { localPerson: config.localPerson }),
     environment,
     audit,
   }
@@ -195,12 +203,17 @@ async function revokeBody(
   return undefined
 }
 
-/** The Fetch routes; `status` builds the configuration summary on each call. */
+/**
+ * The Fetch routes; `status` builds the configuration summary on each call and
+ * `localActor` names the local person for a request that came from this host.
+ */
 export function sessionRoutes(
   authority: SessionAuthority,
   status: () => StatusView,
+  localActor: () => Actor | undefined = () => undefined,
 ): readonly FetchRoute[] {
-  const actorOf = (request: Request) => authority.sessionFromCookie(request.headers.get('cookie'))
+  const actorOf = (request: Request): Actor | undefined =>
+    authority.sessionFromCookie(request.headers.get('cookie')) ?? localActor()
   return [
     {
       path: STATUS_PATH,

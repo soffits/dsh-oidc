@@ -99,6 +99,7 @@ function StatusList({ status, t }: { status: SignInStatus; t: SignInSectionProps
       <Row label={t('persist')}>{yesNo(status.persistSessions)}</Row>
       <Row label={t('apiGuard')}>{yesNo(status.requireSessionOnApi)}</Row>
       <Row label={t('sender')}>{yesNo(status.senderContext)}</Row>
+      {status.localPerson !== undefined && <Row label={t('localPerson')}>{status.localPerson}</Row>}
       {status.environment.length > 0 && (
         <Row label={t('environment')}>
           <span className={CLASS.code}>{status.environment.join(', ')}</span>
