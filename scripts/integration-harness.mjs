@@ -81,6 +81,8 @@ function vitest(environment, expectFailure = false) {
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
   if (expectFailure) {
     if (result.status === 0 || !output.includes('CONTROLLED_SETUP_FAILURE')) {
+      // Show what happened instead, with DSH's launch token masked.
+      process.stderr.write(output.replaceAll(/\?token=[^\s"'&]+/gu, '?token=<masked>'))
       throw new Error('controlled setup failure did not fail with its expected diagnostic')
     }
     if (output.includes('?token='))
