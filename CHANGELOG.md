@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0-alpha.13
+
+- Add `localPerson` (`DSH_OIDC_LOCAL_PERSON`), unset by default: a request from the DSH host itself (its TCP peer is one of the host's own addresses and it carries no `X-Dsh-Oidc-Client-Ip` header) that has DSH's cookie but no OIDC session passes the `/api` guard and is identified as that person through `requestIdentity` (`provider: 'local'`). Without it such requests stay refused. The gateway now always sets the client address header on what it forwards, so gated traffic is never taken for local.
+
 ## 0.3.0-alpha.12
 
 - Add gateway mode (`mode: gateway`, `DSH_OIDC_MODE`): the plugin opens its own listener (`gatewayListen`, optionally with its own TLS certificate) and is the only way into DSH, which moves to loopback; the plugin refuses to start otherwise. Every request and WebSocket upgrade needs a live session except the sign-in routes and `gatewayPublicPaths`. The gateway mints and keeps DSH's own cookie itself, so browsers never get it or the launch token, and it closes a session's WebSockets and event streams when the session signs out, is revoked or expires. `forward-auth` stays the default.

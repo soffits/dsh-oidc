@@ -6,6 +6,7 @@ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { readFileSync } from 'node:fs'
 import { OidcAdmission, clientAddress, setGatewayClientIp, wantsNavigation } from './admission.js'
 import { Gateway, isLoopback } from './gateway.js'
+import { LOCAL_PROVIDER, isLocalRequest, localIdentity } from './local.js'
 import { applyApiGuard } from './api-guard.js'
 import { AUDIT_EVENT, AUDIT_TABLE, AuditLog, auditDomain, type AuditTable } from './audit.js'
 import { RuntimeCompatibilityError, assertRuntimeCompatibility } from './compatibility.js'
@@ -173,6 +174,25 @@ async function serve(
   ]
   for (const route of routes)
     ctx.effect(() => ctx.webServer.register(route), `dsh-oidc: ${route.path}`)
+  const principalOf = (req: IncomingMessage) => admission.principalOf(req)
+  const localPerson = config.localPerson
+  const local =
+    localPerson === undefined
+      ? undefined
+      : (req: IncomingMessage) =>
+          isLocalRequest(req) && admission.currentSession(req) === undefined
+            ? localIdentity(localPerson)
+            : undefined
+  if (localPerson !== undefined)
+    ctx.logger.info(`dsh-oidc: requests from this host without a session act as ${localPerson}`)
+  if (config.requireSessionOnApi)
+    applyApiGuard(
+      ctx,
+      (req) => admission.currentSession(req) !== undefined || local?.(req) !== undefined,
+    )
+  const identity = applyRequestIdentity(ctx, principalOf, local)
+  ctx.provide(REQUEST_IDENTITY_SERVICE, identity)
+  if (config.senderContext) applySenderContext(ctx, principalOf)
   if (config.gateway !== undefined) {
     const gatewayConfig = config.gateway
     const tls =
@@ -231,11 +251,20 @@ async function serve(
   }
   const status = () =>
     statusView(config, pinned, admission.audit.recent(STATUS_AUDIT_EVENTS), config.mode)
-  for (const route of sessionRoutes(admission, status))
+  const localActor = () => {
+    const current = identity.current()
+    return current?.provider === LOCAL_PROVIDER
+      ? {
+          id: '',
+          principal: {
+            issuer: current.issuer,
+            subject: current.id,
+            username: current.id,
+            groups: [],
+          },
+        }
+      : undefined
+  }
+  for (const route of sessionRoutes(admission, status, localActor))
     ctx.effect(() => ctx.connection.fetch.register(route), `dsh-oidc: ${route.path}`)
-  const principalOf = (req: IncomingMessage) => admission.principalOf(req)
-  if (config.requireSessionOnApi)
-    applyApiGuard(ctx, (req) => admission.currentSession(req) !== undefined)
-  ctx.provide(REQUEST_IDENTITY_SERVICE, applyRequestIdentity(ctx, principalOf))
-  if (config.senderContext) applySenderContext(ctx, principalOf)
 }

@@ -32,6 +32,7 @@ const expectedFiles = [
   'dist/index.d.ts',
   'dist/index.js',
   'dist/index.js.map',
+  'dist/local.d.ts',
   'dist/oidc.d.ts',
   'dist/persistence.d.ts',
   'dist/policy.d.ts',

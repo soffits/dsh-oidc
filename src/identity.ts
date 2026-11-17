@@ -80,17 +80,20 @@ export function identityOf(principal: Principal): RequestIdentity {
 /**
  * Wrap every `/api` request that carries a live OIDC session in an identity
  * scope and return the reader. `principalOf` reads the request's own OIDC
- * session and returns undefined for anything else.
+ * session and returns undefined for anything else; `local`, when given, names
+ * the identity of a request without one that came from this host itself.
  */
 export function applyRequestIdentity(
   events: IdentityEvents,
   principalOf: (request: IncomingMessage) => Principal | undefined,
+  local?: (request: IncomingMessage) => RequestIdentity | undefined,
 ): RequestIdentityService {
   const requests = new AsyncLocalStorage<IdentityScope>()
   events.on('connection/request', async (request, _response, next) => {
     const principal = principalOf(request)
-    if (principal === undefined) return next()
-    const scope: IdentityScope = { identity: identityOf(principal), open: true }
+    const identity = principal === undefined ? local?.(request) : identityOf(principal)
+    if (identity === undefined) return next()
+    const scope: IdentityScope = { identity, open: true }
     try {
       await requests.run(scope, next)
     } finally {

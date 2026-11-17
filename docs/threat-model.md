@@ -18,7 +18,8 @@ Assets are OIDC credentials, authorization transactions, local sessions, DSH's n
 10. DSH is reachable only by the proxy (loopback, or a network only the proxy can reach). Strict HTTPS-only network reachability protects previously issued non-`Secure` native cookies; a proxy rewrite marks newly issued native cookies `Secure`, but cannot repair existing browser cookies. HSTS/redirects alone do not close a shared TCP/80 path.
 11. Behind the proxy, `requireSessionOnApi` (default on) refuses every `/api` HTTP request without a live OIDC session in DSH's `connection/request` hook, so a native cookie alone (from a signed-out or revoked browser, or one that reached DSH without the proxy) gets no RPC. It doesn't cover the `/api/remote.mux` WebSocket, statics or other plugins' routes; item 9 still carries those.
 12. In gateway mode the plugin's own listener replaces the proxy check in item 9 for every request and upgrade, DSH listens only on loopback (checked at start), and DSH's cookie never reaches a client: the gateway mints it, adds it on the way in, and strips it from responses. Ending a session also closes that session's open WebSockets and event streams. The proxy, if any, only terminates TLS.
-13. All admitted users are equivalent shared operators; no per-user DSH isolation or attribution is claimed.
+13. With `localPerson` set, a request whose TCP peer is one of the host's own addresses and that has no `X-Dsh-Oidc-Client-Ip` header passes the `/api` guard without a session. This trusts every process on the host (already able to read DSH's home) and assumes no same-host proxy forwards outside traffic past the gate; the gateway always sets the header.
+14. All admitted users are equivalent shared operators; no per-user DSH isolation or attribution is claimed.
 
 ## Residual risks
 

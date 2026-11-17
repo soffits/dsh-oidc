@@ -26,6 +26,7 @@ export const ENVIRONMENT_FIELDS = {
   DSH_OIDC_GATEWAY_TLS_CERT: 'gatewayTlsCertFile',
   DSH_OIDC_GATEWAY_TLS_KEY: 'gatewayTlsKeyFile',
   DSH_OIDC_GATEWAY_PUBLIC_PATHS: 'gatewayPublicPaths',
+  DSH_OIDC_LOCAL_PERSON: 'localPerson',
 } as const satisfies Record<string, keyof Config>
 
 export type EnvironmentVariable = keyof typeof ENVIRONMENT_FIELDS
@@ -144,6 +145,8 @@ export function readEnvironment(
   const publicPaths = read('DSH_OIDC_GATEWAY_PUBLIC_PATHS')
   if (publicPaths !== undefined)
     values.gatewayPublicPaths = stringArray('DSH_OIDC_GATEWAY_PUBLIC_PATHS', publicPaths)
+  const local = read('DSH_OIDC_LOCAL_PERSON')
+  if (local !== undefined) values.localPerson = local
   const fields = (Object.values(ENVIRONMENT_FIELDS) as EnvironmentField[]).filter(
     (field) => values[field] !== undefined,
   )
