@@ -1,3 +1,4 @@
+import type { IncomingMessage } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-credentials'
@@ -13,6 +14,7 @@ import {
   sessionDomain,
   type SessionDomainFacility,
 } from './persistence.js'
+import { REQUEST_IDENTITY_SERVICE, applyRequestIdentity } from './identity.js'
 import { applySenderContext } from './sender.js'
 import type { SessionPersistence } from './state.js'
 
@@ -24,6 +26,13 @@ export { SESSION_DOMAIN, parsePersistedSession, policyFingerprint } from './pers
 export { ENVIRONMENT_FIELDS, applyEnvironment, readEnvironment } from './env.js'
 export { REQUIRED_SEAMS, RuntimeCompatibilityError } from './compatibility.js'
 export { senderOf, senderPrincipal } from './sender.js'
+export {
+  REQUEST_IDENTITY_SERVICE,
+  applyRequestIdentity,
+  identityOf,
+  type RequestIdentity,
+  type RequestIdentityService,
+} from './identity.js'
 export const name = 'soffits-oidc'
 export const inject = ['webServer', 'connection', 'credentials']
 
@@ -72,8 +81,8 @@ function member(target: unknown, key: string): unknown {
 }
 
 /**
- * Build the admission, load any persisted sessions, then register its routes
- * (and the sender line) on `ctx`.
+ * Build the admission, load any persisted sessions, then register its routes,
+ * the `requestIdentity` service and (when enabled) the sender metadata on `ctx`.
  */
 async function serve(
   ctx: Context,
@@ -111,5 +120,7 @@ async function serve(
   ]
   for (const route of routes)
     ctx.effect(() => ctx.webServer.register(route), `dsh-oidc: ${route.path}`)
-  if (config.senderContext) applySenderContext(ctx, (req) => admission.principalOf(req))
+  const principalOf = (req: IncomingMessage) => admission.principalOf(req)
+  ctx.provide(REQUEST_IDENTITY_SERVICE, applyRequestIdentity(ctx, principalOf))
+  if (config.senderContext) applySenderContext(ctx, principalOf)
 }

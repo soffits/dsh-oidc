@@ -37,6 +37,8 @@ function host(overrides: Record<string, unknown> = {}): Record<string, unknown> 
     webServer: { register: () => () => undefined },
     connection: { authenticatedUrl: (url: string) => url },
     credentials: { resolve: async () => undefined },
+    on: () => undefined,
+    provide: () => () => undefined,
     ...overrides,
   }
 }
@@ -146,18 +148,26 @@ describe('DSH host seam check', () => {
     expect(routes).toEqual([])
   })
 
-  it('listens for prompts only when senderContext is on', async () => {
+  it('always provides requestIdentity and listens for prompts only when senderContext is on', async () => {
     const listened: string[] = []
+    const provided: string[] = []
     const make = () =>
       host({
         logger: {},
         effect: (factory: () => unknown) => factory(),
         on: (name: string) => listened.push(name),
+        provide: (name: string) => {
+          provided.push(name)
+          return () => undefined
+        },
       }) as unknown as Context
     await apply(make(), config)
-    expect(listened).toEqual([])
+    expect(provided).toEqual(['requestIdentity'])
+    expect(listened).toEqual(['connection/request'])
+    listened.length = 0
     await apply(make(), { ...config, senderContext: true })
     expect(listened).toEqual([
+      'connection/request',
       'connection/request',
       'agent/inbox/inserted',
       'agent/inbox/discarded',

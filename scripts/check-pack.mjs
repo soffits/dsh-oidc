@@ -23,6 +23,7 @@ const expectedFiles = [
   'dist/client/styles.d.ts',
   'dist/config.d.ts',
   'dist/env.d.ts',
+  'dist/identity.d.ts',
   'dist/index.d.ts',
   'dist/index.js',
   'dist/index.js.map',
