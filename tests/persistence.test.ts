@@ -254,6 +254,8 @@ describe('plugin wiring', () => {
       webServer: { register: (route: { path: string }) => routes.push(route.path) },
       connection: { authenticatedUrl: (url: string) => url },
       credentials: { resolve: async () => undefined },
+      on: () => undefined,
+      provide: () => () => undefined,
       effect: (factory: () => unknown) => {
         const result = factory()
         if (typeof result === 'function') disposers.push(result as () => unknown)

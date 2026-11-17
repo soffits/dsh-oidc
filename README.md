@@ -110,6 +110,39 @@ The name is `preferred_username`, then `name`, then `email`, with anything that 
 
 Only the server-side session decides: the plugin looks up its own HttpOnly session cookie on the `/api` request that admits the prompt (DSH's `connection/request` hook) and reads nothing else the browser sends. Prompts from anywhere else (other channel plugins, scheduled jobs, subagents, messages an agent sends to another session) get no sender, including work that a Web request started but that runs after it. This is recognition, not isolation: everyone signed in still shares one DSH. With a renderer installed, the name goes to the session's model provider with the prompt, which is why it is off by default.
 
+### Request identity for other plugins
+
+DSH admits every signed-in browser as the same owner, so a plugin's own `/api` routes can't tell who is calling either. This plugin provides a small `requestIdentity` service for them. Inside any authenticated `/api` request (a Fetch route registered with `ctx.connection.fetch.register`, or an RPC handler on the shared `/api` channel), `current()` returns the person whose OIDC session made the request, or `null`:
+
+```ts
+interface RequestIdentityService {
+  current(): RequestIdentity | null
+}
+
+interface RequestIdentity {
+  provider: string // 'oidc'
+  issuer: string // the OIDC issuer
+  id: string // the OIDC sub, unique within issuer
+  name?: string // preferred_username, then name, then email; display only
+}
+```
+
+```js
+ctx.connection.fetch.register({
+  path: '/api/example/whoami',
+  methods: ['GET'],
+  requestBody: 'buffered',
+  fetch: async () => {
+    const who = ctx.get('requestIdentity')?.current() ?? null
+    return Response.json({ id: who?.id ?? null })
+  },
+})
+```
+
+The service is always on; it reads only this plugin's own session cookie, the same check as `senderContext`. It is `null` outside a request, for a request without an OIDC session (an API client with DSH's own token), and in work a request started that keeps running after the request has settled, such as an agent turn. Routes registered straight on the web server (`ctx.webServer.register`) are outside `/api` and see `null`.
+
+The name and shape aren't tied to OIDC: another sign-in plugin can provide `requestIdentity` with the same interface, so consumers work with whichever one is installed. Read it with `ctx.get('requestIdentity')` at request time rather than injecting it, if your plugin should also work without it.
+
 ### Session persistence
 
 By default sessions live only in process memory, so a DSH restart signs everyone out. With `persistSessions: true` they are also kept in DSH's own storage, in `storages/dsh_oidc_sessions.json` under the DSH home, which DSH writes atomically with mode `0600` in a `0700` directory. The routes register only after the stored sessions are loaded; if the store cannot be opened, nothing registers and the proxy keeps denying.

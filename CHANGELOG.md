@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0-alpha.9
+
+- Add the `requestIdentity` service: inside an authenticated `/api` request, `ctx.requestIdentity.current()` returns the person whose OIDC session made it (`{ provider: 'oidc', issuer, id: <sub>, name }`) or `null`, so other plugins can check who is calling their own `/api` routes. The interface is provider-neutral; see [Request identity for other plugins](README.md#request-identity-for-other-plugins).
+
 ## 0.3.0-alpha.8
 
 - `senderContext` now only records metadata: the sender on the prompt's `source.principal` and the time DSH admitted it on `source.envelope.sentAt` (Unix ms). The plugin no longer adds its own `oidc-sender` notice line; install [dsh-message-context](https://github.com/soffits/dsh-message-context) to show the model who wrote each message, the same way for every channel. `timeZone` (`DSH_OIDC_TIME_ZONE`) is gone, since the renderer formats times.
