@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0-alpha.14
+
+- The Web UI can be installed as an app again behind the gate. Browsers fetch the web app manifest and icons without cookies (WebKit always does for the `apple-touch-icon`), so they got 401 and iPhone's Add to Home Screen and Android's install broke. A GET or HEAD of a path in the new `publicPaths` (`DSH_OIDC_PUBLIC_PATHS`) now needs no session, in both modes. The default is DSH's `/manifest.webmanifest`, the icons it lists and `/apple-touch-icon.png`; entries must be exact static manifest or image file paths outside `/api`, `/plugins`, `/auth`, `/connect` and `/_dsh-oidc`, and `[]` turns it off. With forward-auth, `/auth/check` reads `X-Forwarded-Method` and `X-Forwarded-Uri` from a trusted proxy only; the nginx example now sets them, and the Traefik example trusts loopback forwarded headers on its check hop.
+- Breaking: `gatewayPublicPaths` (`DSH_OIDC_GATEWAY_PUBLIC_PATHS`) is gone, with its prefix patterns. `publicPaths` replaces it in both modes, exact paths only, and WebSocket upgrades always need a session. The gateway now fetches public files from DSH without DSH's cookie.
+- The Caddy and gateway acceptance runs read the manifest and icons from DSH's real frontend build and expect each to load without cookies, while everything else, a spoofed `X-Forwarded-Uri` included, stays 401.
+
 ## 0.3.0-alpha.13
 
 - Add `localPerson` (`DSH_OIDC_LOCAL_PERSON`), unset by default: a request from the DSH host itself (its TCP peer is one of the host's own addresses and it carries no `X-Dsh-Oidc-Client-Ip` header) that has DSH's cookie but no OIDC session passes the `/api` guard and is identified as that person through `requestIdentity` (`provider: 'local'`). Without it such requests stay refused. The gateway now always sets the client address header on what it forwards, so gated traffic is never taken for local.

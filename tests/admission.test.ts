@@ -213,6 +213,40 @@ describe('OIDC route admission', () => {
     expect(api.captured.status).toBe(401)
   })
 
+  it('passes the manifest and app icons without a session, as the proxy names them', () => {
+    const { admission } = harness()
+    const ask = (forwarded: Record<string, string>, remoteAddress = '127.0.0.1') => {
+      const res = response()
+      admission.check(
+        request('GET', '/auth/check', { accept: '*/*', ...forwarded }, undefined, remoteAddress),
+        res.value,
+      )
+      return res.captured.status
+    }
+    const asProxy = (method: string, uri: string) => ({
+      'x-forwarded-method': method,
+      'x-forwarded-uri': uri,
+    })
+    expect(ask(asProxy('GET', '/manifest.webmanifest'))).toBe(204)
+    expect(ask(asProxy('HEAD', '/apple-touch-icon.png'))).toBe(204)
+    expect(ask(asProxy('GET', '/icon-maskable-512.png?v=3'))).toBe(204)
+    for (const [method, uri] of [
+      ['POST', '/manifest.webmanifest'],
+      ['GET', '/'],
+      ['GET', '/favicon.svg'],
+      ['GET', '/api/notify-inbox/sw.js'],
+      ['GET', '/plugins/events'],
+      ['GET', '/connect?token=x'],
+      ['GET', '/icon-192.png/../../api/x'],
+      ['GET', 'https://dsh.example/manifest.webmanifest'],
+    ])
+      expect(ask(asProxy(method!, uri!)), `${method!} ${uri!}`).toBe(401)
+    // Without the method the proxy always sends, nothing is assumed.
+    expect(ask({ 'x-forwarded-uri': '/manifest.webmanifest' })).toBe(401)
+    // A client that reaches the check directly can't name a public file.
+    expect(ask(asProxy('GET', '/manifest.webmanifest'), '198.51.100.7')).toBe(401)
+  })
+
   it('answers HEAD login without creating transaction state', async () => {
     const { admission, protocol } = harness()
     const start = vi.spyOn(protocol, 'start')

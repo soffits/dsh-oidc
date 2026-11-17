@@ -128,24 +128,31 @@ describe('DSH_OIDC_* environment precedence', () => {
 })
 
 describe('gateway environment', () => {
-  it('reads the mode, listen address, TLS files and public paths', () => {
+  it('reads the mode, listen address and TLS files', () => {
     const layer = readEnvironment({
       DSH_OIDC_MODE: 'gateway',
       DSH_OIDC_GATEWAY_LISTEN: '0.0.0.0:3080',
       DSH_OIDC_GATEWAY_TLS_CERT: '/c.pem',
       DSH_OIDC_GATEWAY_TLS_KEY: '/k.pem',
-      DSH_OIDC_GATEWAY_PUBLIC_PATHS: '["/hooks/*"]',
     })
     expect(layer.values).toEqual({
       mode: 'gateway',
       gatewayListen: '0.0.0.0:3080',
       gatewayTlsCertFile: '/c.pem',
       gatewayTlsKeyFile: '/k.pem',
-      gatewayPublicPaths: ['/hooks/*'],
     })
     expect(() => readEnvironment({ DSH_OIDC_MODE: 'native' })).toThrow(/DSH_OIDC_MODE/u)
-    expect(() => readEnvironment({ DSH_OIDC_GATEWAY_PUBLIC_PATHS: '/hooks' })).toThrow(
-      /DSH_OIDC_GATEWAY_PUBLIC_PATHS/u,
+  })
+})
+
+describe('public paths environment', () => {
+  it('replaces the list, an empty array included, and rejects anything but a JSON array', () => {
+    expect(readEnvironment({ DSH_OIDC_PUBLIC_PATHS: '["/icon-192.png"]' }).values).toEqual({
+      publicPaths: ['/icon-192.png'],
+    })
+    expect(readEnvironment({ DSH_OIDC_PUBLIC_PATHS: '[]' }).values).toEqual({ publicPaths: [] })
+    expect(() => readEnvironment({ DSH_OIDC_PUBLIC_PATHS: '/icon-192.png' })).toThrow(
+      /DSH_OIDC_PUBLIC_PATHS/u,
     )
   })
 })

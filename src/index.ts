@@ -218,6 +218,7 @@ async function serve(
         upstream: () => new URL(ctx.webServer.getOrigin()),
         authenticatedUrl: (base) => ctx.connection.authenticatedUrl(base),
         publicHost: config.publicOrigin.host,
+        publicPaths: config.publicPaths,
       },
       ctx.logger,
       tls,

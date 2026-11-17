@@ -18,6 +18,7 @@ import { once } from 'node:events'
 import { promisify } from 'node:util'
 import { exportJWK, importPKCS8, SignJWT } from 'jose'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { installFiles } from './support/install-files.js'
 
 interface HttpResult {
   readonly status: number
@@ -127,6 +128,7 @@ let clientSecret = ''
 let clientSecretUsed = false
 let providerSubject = 'synthetic-operator'
 let realAssetPath = ''
+let installPaths: string[] = []
 let nativeCookieHeader = ''
 const issuedCodes = new Map<string, { challenge: string; nonce: string }>()
 
@@ -584,6 +586,7 @@ async function setupStack(): Promise<void> {
   if (asset === undefined || !asset.includes('-'))
     throw new Error('real hashed frontend asset not found')
   realAssetPath = new URL(asset, 'https://dsh.test/').pathname
+  installPaths = installFiles(join(dirname(frontendManifest), 'dist'))
 
   publicPort = await freePort()
   adminPort = await freePort()
@@ -733,6 +736,14 @@ describe(
       expect(upload.status).toBe(401)
       // The profile endpoint sits behind forward_auth like the application.
       expect((await curl('dsh.test', `${publicOrigin}/_dsh-oidc/session`)).status).toBe(401)
+      // Caddy sets X-Forwarded-Uri itself, so a client can't name a public file to pass.
+      const spoofed = await curl('dsh.test', `${publicOrigin}/api/__acceptance_missing__`, [
+        '--header',
+        'X-Forwarded-Uri: /manifest.webmanifest',
+        '--header',
+        'X-Forwarded-Method: GET',
+      ])
+      expect(spoofed.status).toBe(401)
       const opened = await page.evaluate(
         (url) =>
           new Promise<boolean>((resolve) => {
@@ -747,6 +758,34 @@ describe(
         `wss://dsh.test:${String(publicPort)}/api/remote.mux`,
       )
       expect(opened).toBe(false)
+    })
+
+    it('serves the manifest and the icons it lists to a cookieless phone, and nothing more', async () => {
+      // Browsers fetch these without cookies, so installing the app needs them before sign-in.
+      expect(installPaths).toContain('/manifest.webmanifest')
+      expect(installPaths).toContain('/apple-touch-icon.png')
+      for (const path of installPaths) {
+        const file = await curl('dsh.test', publicOrigin + path)
+        expect(file.status, path).toBe(200)
+        expect(file.headers, path).toMatch(
+          /^content-type: (?:application\/manifest\+json|image\/png)/imu,
+        )
+      }
+      for (const path of [
+        '/favicon.svg',
+        '/manifest.webmanifest/../api/__acceptance_missing__',
+        '/api/notify-inbox/sw.js',
+      ])
+        expect((await curl('dsh.test', publicOrigin + path, ['--path-as-is'])).status, path).toBe(
+          401,
+        )
+      const post = await curl('dsh.test', `${publicOrigin}/manifest.webmanifest`, [
+        '--request',
+        'POST',
+        '--data',
+        'x',
+      ])
+      expect(post.status).toBe(401)
     })
 
     it('denies a signed but unallowlisted identity without bootstrapping a native session', async () => {

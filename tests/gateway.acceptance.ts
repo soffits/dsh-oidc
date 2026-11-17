@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path'
 import { connect as tlsConnect } from 'node:tls'
 import type { Browser, BrowserContext, Page } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { installFiles } from './support/install-files.js'
 import { startSyntheticProvider, type SyntheticProvider } from './support/synthetic-provider.js'
 
 const runRoot = required('DSH_OIDC_RUN_ROOT')
@@ -30,6 +31,7 @@ let gatewayPort = 0
 let dshPort = 0
 let publicOrigin = ''
 let assetPath = ''
+let installPaths: string[] = []
 let certPath = ''
 let keyPath = ''
 
@@ -233,6 +235,7 @@ beforeAll(async () => {
   const asset = /<script[^>]+src="([^"?]+\.js)"/u.exec(index)?.[1]
   if (asset === undefined) throw new Error('real frontend asset not found')
   assetPath = new URL(asset, 'https://dsh.test/').pathname
+  installPaths = installFiles(join(dirname(frontend), 'dist'))
   gatewayPort = await freePort()
   dshPort = await freePort()
   publicOrigin = `https://dsh.test:${String(gatewayPort)}`
@@ -296,6 +299,23 @@ describe(
       expect(await upgrade('/api/remote.mux')).toMatch(/^HTTP\/1\.1 401/u)
       // A DSH cookie a client made up or kept from elsewhere is dropped, not trusted.
       expect((await gateway('/api/__missing__', { cookie: 'dsh-auth-x=forged' })).status).toBe(401)
+    })
+
+    it('serves the manifest and the icons it lists to a cookieless phone, and nothing more', async () => {
+      expect(installPaths).toContain('/manifest.webmanifest')
+      expect(installPaths).toContain('/apple-touch-icon.png')
+      for (const path of installPaths) expect((await gateway(path)).status, path).toBe(200)
+      const manifest = JSON.parse((await gateway('/manifest.webmanifest')).body) as {
+        start_url?: string
+      }
+      expect(manifest.start_url).toBe('./')
+      for (const path of [
+        '/favicon.svg',
+        '/manifest.webmanifest/../api/__missing__',
+        '/api/notify-inbox/sw.js',
+      ])
+        expect((await gateway(path)).status, path).toBe(401)
+      expect(await upgrade('/manifest.webmanifest')).toMatch(/^HTTP\/1\.1 401/u)
     })
 
     it('signs in through the gateway with no DSH cookie or launch token in the browser', async () => {

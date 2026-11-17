@@ -11,6 +11,7 @@ import { createServer as createHttpsServer, request as httpsRequest } from 'node
 import { isIP } from 'node:net'
 import type { Duplex } from 'node:stream'
 import type { GatewayConfig } from './config.js'
+import { normalizedTarget, targetPath, type PublicPaths } from './public-paths.js'
 import type { SessionEndReason, SessionSummary, SessionView } from './state.js'
 
 /**
@@ -18,10 +19,11 @@ import type { SessionEndReason, SessionSummary, SessionView } from './state.js'
  *
  * DSH's web server moves to loopback and this listener takes the public
  * address. Every request and WebSocket upgrade passes one decision: the
- * plugin's sign-in routes are answered here, a few configured public paths go
- * through as they are, and everything else needs a live session of this
- * plugin or gets the sign-in redirect (navigations) or 401. Allowed traffic is
- * streamed to DSH's loopback origin with DSH's own cookie added, which the
+ * plugin's sign-in routes are answered here, GET and HEAD of the configured
+ * public files (manifest, app icons) go through without DSH's cookie, and
+ * everything else, every upgrade included, needs a live session of this
+ * plugin or gets the sign-in redirect (navigations) or 401. Signed-in traffic
+ * is streamed to DSH's loopback origin with DSH's own cookie added, which the
  * gateway mints itself, so browsers never hold DSH's 30-day credential or see
  * its launch token. Sockets and long responses are tracked per session and
  * closed when the session ends, so signing out or revoking cuts live
@@ -87,6 +89,8 @@ export interface GatewayHost {
   authenticatedUrl(base: string): string
   /** The public `Host` value DSH's fence and cookie are bound to. */
   readonly publicHost: string
+  /** Static files that load without a session. */
+  readonly publicPaths: PublicPaths
 }
 
 export interface GatewayTls {
@@ -100,29 +104,6 @@ export function isLoopback(host: string | undefined): boolean {
   const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
   if (bare === 'localhost' || bare === '::1') return true
   return isIP(bare) === 4 && bare.startsWith('127.')
-}
-
-/** Whether `path` matches an entry of `publicPaths` (exact, or a prefix ending in `*`). */
-export function isPublicPath(path: string, publicPaths: readonly string[]): boolean {
-  return publicPaths.some((entry) =>
-    entry.endsWith('*') ? path.startsWith(entry.slice(0, -1)) : path === entry,
-  )
-}
-
-/**
- * The request target as an origin-form path and query, normalized the way
- * WHATWG URL parsing does (dot segments resolved), so the gateway decides on
- * the same path DSH routes. Undefined for anything that isn't origin-form.
- */
-export function normalizedTarget(raw: string | undefined): string | undefined {
-  if (raw === undefined || !raw.startsWith('/') || raw.startsWith('//')) return undefined
-  try {
-    const url = new URL(raw, 'http://gateway.invalid')
-    if (url.origin !== 'http://gateway.invalid') return undefined
-    return `${url.pathname}${url.search}`
-  } catch {
-    return undefined
-  }
 }
 
 function connectionTokens(headers: IncomingHttpHeaders): Set<string> {
@@ -369,7 +350,7 @@ export class Gateway {
   private request(req: IncomingMessage, res: ServerResponse): void {
     const target = normalizedTarget(req.url)
     if (target === undefined) return plain(res, 400, 'bad request\n')
-    const path = target.split('?', 1)[0]!
+    const path = targetPath(target)
     // Every forwarded request carries the client address, which is also what
     // tells DSH's side it came through the gate rather than from this host.
     const ip = this.host.clientIp(req)
@@ -385,7 +366,7 @@ export class Gateway {
     }
     if (path.startsWith('/auth/') || path === '/connect') return plain(res, 404, 'not found\n')
     let session: SessionView | undefined
-    if (!isPublicPath(path, this.config.publicPaths)) {
+    if (!this.host.publicPaths.allows(req.method, path)) {
       session = this.host.session(req)
       if (session === undefined) {
         if ((req.method === 'GET' || req.method === 'HEAD') && this.host.wantsNavigation(req)) {
@@ -414,7 +395,8 @@ export class Gateway {
       port: upstream.port,
       method: req.method,
       path: target,
-      headers: upstreamHeaders(req.headers, this.native, ip),
+      // A public file is fetched as an anonymous browser would, without DSH's cookie.
+      headers: upstreamHeaders(req.headers, session === undefined ? undefined : this.native, ip),
       rejectUnauthorized: false,
     })
     const finish = () => {
@@ -440,18 +422,16 @@ export class Gateway {
     socket.on('error', () => socket.destroy())
     const target = normalizedTarget(req.url)
     if (target === undefined) return rawResponse(socket, 400, 'Bad Request')
-    const path = target.split('?', 1)[0]!
+    const path = targetPath(target)
     if (this.host.routes.has(path) || path.startsWith('/auth/') || path === '/connect')
       return rawResponse(socket, 404, 'Not Found')
     const ip = this.host.clientIp(req)
     if (ip === undefined) return rawResponse(socket, 400, 'Bad Request')
-    let session: SessionView | undefined
-    if (!isPublicPath(path, this.config.publicPaths)) {
-      session = this.host.session(req)
-      if (session === undefined) return rawResponse(socket, 401, 'Unauthorized')
-    }
-    const untrack = session === undefined ? undefined : this.track(session.id, socket)
-    socket.once('close', () => untrack?.())
+    // Public files are never a reason to open a socket: every upgrade needs a session.
+    const session = this.host.session(req)
+    if (session === undefined) return rawResponse(socket, 401, 'Unauthorized')
+    const untrack = this.track(session.id, socket)
+    socket.once('close', untrack)
     const upstream = this.host.upstream()
     const send = upstream.protocol === 'https:' ? httpsRequest : httpRequest
     const outgoing = send({

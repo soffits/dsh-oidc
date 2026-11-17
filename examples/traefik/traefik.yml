@@ -31,6 +31,11 @@ entryPoints:
     address: '127.0.0.1:9180'
     http:
       aliasHeadersStrategy: delete
+    # forwardAuth's X-Forwarded-Method and X-Forwarded-Uri, which let the
+    # manifest and app icons through, come from Traefik itself on loopback;
+    # without this Traefik deletes them here as untrusted.
+    forwardedHeaders:
+      trustedIPs: ['127.0.0.1/32']
 
 providers:
   file:
