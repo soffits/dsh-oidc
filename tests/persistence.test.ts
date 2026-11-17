@@ -253,9 +253,13 @@ describe('plugin wiring', () => {
     const ctx: Record<string, unknown> = {
       logger: { info: vi.fn(), warn: vi.fn() },
       webServer: { register: (route: { path: string }) => routes.push(route.path) },
-      connection: { authenticatedUrl: (url: string) => url },
+      connection: {
+        authenticatedUrl: (url: string) => url,
+        fetch: { register: () => async () => undefined },
+      },
       credentials: { resolve: async () => undefined },
       on: () => undefined,
+      emit: () => undefined,
       provide: () => () => undefined,
       effect: (factory: () => unknown) => {
         const result = factory()

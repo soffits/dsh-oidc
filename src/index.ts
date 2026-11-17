@@ -8,7 +8,8 @@ import { applyApiGuard } from './api-guard.js'
 import { AUDIT_EVENT, AUDIT_TABLE, AuditLog, auditDomain, type AuditTable } from './audit.js'
 import { RuntimeCompatibilityError, assertRuntimeCompatibility } from './compatibility.js'
 import { Config, resolveConfig, type Config as OidcConfig, type ResolvedConfig } from './config.js'
-import { applyEnvironment, readEnvironment } from './env.js'
+import { ENVIRONMENT_FIELDS, applyEnvironment, readEnvironment } from './env.js'
+import { STATUS_AUDIT_EVENTS, sessionRoutes, statusView } from './sessions-api.js'
 import { OpenIdClientProtocol } from './oidc.js'
 import {
   SESSION_TABLE,
@@ -64,8 +65,11 @@ export async function apply(ctx: Context, rawConfig: OidcConfig | undefined): Pr
   if (environment.fields.length > 0)
     ctx.logger.info(`dsh-oidc: from environment: ${environment.fields.join(', ')}`)
   assertRuntimeCompatibility(ctx)
+  const pinned = Object.entries(ENVIRONMENT_FIELDS)
+    .filter(([, field]) => environment.fields.includes(field))
+    .map(([variable]) => variable)
   if (!config.persistSessions) {
-    await serve(ctx, config)
+    await serve(ctx, config, pinned)
     return
   }
   // Routes register only once the stored sessions are loaded, so until then
@@ -83,6 +87,7 @@ export async function apply(ctx: Context, rawConfig: OidcConfig | undefined): Pr
     await serve(
       sub,
       config,
+      pinned,
       {
         table: domain.table(SESSION_TABLE),
         policy: policyFingerprint(config),
@@ -106,6 +111,7 @@ function member(target: unknown, key: string): unknown {
 async function serve(
   ctx: Context,
   config: ResolvedConfig,
+  pinned: readonly string[],
   persistence?: SessionPersistence,
   auditTable?: AuditTable,
 ): Promise<void> {
@@ -151,6 +157,9 @@ async function serve(
   ]
   for (const route of routes)
     ctx.effect(() => ctx.webServer.register(route), `dsh-oidc: ${route.path}`)
+  const status = () => statusView(config, pinned, admission.audit.recent(STATUS_AUDIT_EVENTS))
+  for (const route of sessionRoutes(admission, status))
+    ctx.effect(() => ctx.connection.fetch.register(route), `dsh-oidc: ${route.path}`)
   const principalOf = (req: IncomingMessage) => admission.principalOf(req)
   if (config.requireSessionOnApi)
     applyApiGuard(ctx, (req) => admission.currentSession(req) !== undefined)

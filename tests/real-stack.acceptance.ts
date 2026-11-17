@@ -66,6 +66,7 @@ interface Locator {
   waitFor(options?: Record<string, unknown>): Promise<void>
   screenshot(options?: Record<string, unknown>): Promise<Buffer>
   first(): Locator
+  getByText(text: string, options?: Record<string, unknown>): Locator
   count(): Promise<number>
 }
 
@@ -1122,9 +1123,30 @@ describe(
           await toggleMenu('visible')
         }
 
-        // Settings stays reachable from the seat this button took over.
+        // The sessions endpoint lists this browser's own session first.
+        const listed = await page.evaluate(async () => {
+          const response = await fetch('/api/dsh-oidc/sessions')
+          return {
+            status: response.status,
+            body: (await response.json()) as {
+              sessions: Array<{ current: boolean; name?: string; kind: string }>
+            },
+          }
+        }, undefined)
+        expect(listed.status).toBe(200)
+        expect(listed.body.sessions[0]).toMatchObject({ current: true, kind: 'browser' })
+
+        // Settings stays reachable from the seat this button took over, and
+        // carries the plugin's Sign-in page with this device's session on it.
         await page.getByRole('menuitem', { name: 'Settings' }).click()
-        await page.getByRole('dialog').first().waitFor({ state: 'visible' })
+        const settings = page.getByRole('dialog').first()
+        await settings.waitFor({ state: 'visible' })
+        await settings.getByText('Sign-in', { exact: true }).first().click()
+        const section = page.locator('[data-dsh-oidc-settings]')
+        await section.getByText('This device').waitFor({ state: 'visible', timeout: 15_000 })
+        expect(await section.textContent()).toContain('Signed in')
+        if (screenshotDirectory !== undefined)
+          await page.screenshot({ path: join(screenshotDirectory, 'settings-sign-in.png') })
         await page.keyboard.press('Escape')
 
         await openMenu()

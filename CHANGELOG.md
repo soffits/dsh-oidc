@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0-alpha.11
+
+- Add a **Sign-in** page to DSH's Settings: every signed-in session (this device first, then your other sessions, then everyone else's) with the person, browser and system, address, and when it signed in, was last active and expires. Each can be signed out from there, and "Sign out my other sessions" ends the rest of yours. Since everyone signed in is a full DSH owner, anyone can end anyone's session; the page says so. Below that, a read-only summary of the provider, who may sign in, lifetimes and which fields the `DSH_OIDC_*` environment sets, and the recent audit events.
+- New owner-only endpoints behind DSH's `/api` admission and the plugin's own session check: `GET /api/dsh-oidc/status`, `GET /api/dsh-oidc/sessions`, `POST /api/dsh-oidc/sessions/revoke` (`{ "id" }` or `{ "others": true }`, JSON, same-origin). The startup check now also wants `ctx.connection.fetch.register`.
+
 ## 0.3.0-alpha.10
 
 - `/api` now also wants a live OIDC session: a listener in DSH's `connection/request` hook answers 401 to any `/api` HTTP request without one, so DSH's own 30-day cookie alone (from a browser that signed out, or copied off a device) gets no RPC. On by default; `requireSessionOnApi: false` (`DSH_OIDC_REQUIRE_SESSION_ON_API`) turns it off for API clients that use DSH's token directly.
