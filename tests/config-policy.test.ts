@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseListen, resolveConfig } from '../src/config.js'
+import { DEFAULT_PUBLIC_PATHS } from '../src/public-paths.js'
 import { authorizeClaims } from '../src/policy.js'
 
 const base = {
@@ -207,7 +208,7 @@ describe('gateway mode configuration', () => {
     expect(() => resolveConfig({ ...base, mode: 'gateway' })).toThrow(/gatewayListen/u)
     expect(
       resolveConfig({ ...base, mode: 'gateway', gatewayListen: '0.0.0.0:3080' }).gateway,
-    ).toEqual({ host: '0.0.0.0', port: 3080, publicPaths: [] })
+    ).toEqual({ host: '0.0.0.0', port: 3080 })
     expect(
       resolveConfig({
         ...base,
@@ -215,17 +216,24 @@ describe('gateway mode configuration', () => {
         gatewayListen: '[::1]:8443',
         gatewayTlsCertFile: '/c.pem',
         gatewayTlsKeyFile: '/k.pem',
-        gatewayPublicPaths: ['/hooks/*', '/ping'],
       }).gateway,
     ).toEqual({
       host: '::1',
       port: 8443,
       tls: { certFile: '/c.pem', keyFile: '/k.pem' },
-      publicPaths: ['/hooks/*', '/ping'],
     })
   })
 
-  it('rejects ambiguous listen addresses, half a TLS pair and unsafe public paths', () => {
+  it('lets the manifest and app icons load without a session by default, in either mode', () => {
+    expect(resolveConfig(base).publicPaths.entries).toEqual(DEFAULT_PUBLIC_PATHS)
+    expect(
+      resolveConfig({ ...base, mode: 'gateway', gatewayListen: '127.0.0.1:1' }).publicPaths.entries,
+    ).toEqual(DEFAULT_PUBLIC_PATHS)
+    expect(resolveConfig({ ...base, publicPaths: [] }).publicPaths.entries).toEqual([])
+    expect(() => resolveConfig({ ...base, publicPaths: ['/api/x.png'] })).toThrow(/publicPaths/u)
+  })
+
+  it('rejects ambiguous listen addresses and half a TLS pair', () => {
     const gateway = { ...base, mode: 'gateway' as const }
     for (const listen of [
       '3080',
@@ -239,11 +247,5 @@ describe('gateway mode configuration', () => {
     expect(() =>
       resolveConfig({ ...gateway, gatewayListen: '127.0.0.1:1', gatewayTlsCertFile: '/c.pem' }),
     ).toThrow(/go together/u)
-    for (const path of ['hooks', '/', '/*', '/a/*/b', '/a/../b', '/a/./b'])
-      expect(
-        () =>
-          resolveConfig({ ...gateway, gatewayListen: '127.0.0.1:1', gatewayPublicPaths: [path] }),
-        path,
-      ).toThrow(/gatewayPublicPaths/u)
   })
 })

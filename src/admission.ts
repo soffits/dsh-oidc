@@ -5,6 +5,7 @@ import type { CredentialRef, ResolvedCredential } from '@deepseek-ai/dsh-credent
 import { AuditLog, type AuditPerson } from './audit.js'
 import type { ResolvedConfig, TrustedProxies } from './config.js'
 import type { OidcProtocol } from './oidc.js'
+import { normalizedTarget, targetPath } from './public-paths.js'
 import { authorizeClaims, type Principal } from './policy.js'
 import {
   AuthorizationTransactions,
@@ -366,6 +367,7 @@ export class OidcAdmission {
   check(req: IncomingMessage, res: ServerResponse): void {
     if (req.method !== 'GET' && req.method !== 'HEAD') return methodNotAllowed(res, 'GET, HEAD')
     if (!this.trustedRequest(req)) return plain(res, 403, 'forbidden\n', req.method === 'HEAD')
+    if (this.publicRequest(req)) return plain(res, 204, '', req.method === 'HEAD')
     const session = this.sessions.read(this.sessionValue(req))
     if (session !== undefined) return plain(res, 204, '', req.method === 'HEAD')
     // Browser navigations go to the bundled sign-in page, or straight to the
@@ -374,6 +376,24 @@ export class OidcAdmission {
     if (req.method === 'GET' && wantsNavigation(req))
       return redirect(res, this.config.directLogin ? '/auth/login?nav=1' : '/auth/signin')
     plain(res, 401, 'unauthorized\n', req.method === 'HEAD')
+  }
+
+  /**
+   * Whether the request the proxy is asking about is a GET or HEAD of a
+   * configured public file. The original method and URI come from the
+   * proxy's `X-Forwarded-Method` and `X-Forwarded-Uri`, which Caddy and
+   * Traefik set themselves on a forward-auth subrequest; they are believed
+   * only from a trusted proxy, so a client can't name a public file to get
+   * another path through.
+   */
+  private publicRequest(req: IncomingMessage): boolean {
+    const peer = req.socket.remoteAddress
+    if (peer === undefined || !this.config.trustedProxies.has(peer)) return false
+    const target = normalizedTarget(header(req, 'x-forwarded-uri'))
+    return (
+      target !== undefined &&
+      this.config.publicPaths.allows(header(req, 'x-forwarded-method'), targetPath(target))
+    )
   }
 
   /**

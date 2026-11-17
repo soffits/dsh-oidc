@@ -1,6 +1,7 @@
 import { BlockList, isIP } from 'node:net'
 import z from '@deepseek-ai/schemastery'
 import { credentialRef, type CredentialRef } from '@deepseek-ai/dsh-credentials'
+import { DEFAULT_PUBLIC_PATHS, publicPaths, type PublicPaths } from './public-paths.js'
 
 /** Host-only OIDC admission configuration. */
 export interface Config {
@@ -36,7 +37,7 @@ export interface Config {
   gatewayListen?: string
   gatewayTlsCertFile?: string
   gatewayTlsKeyFile?: string
-  gatewayPublicPaths?: string[]
+  publicPaths?: string[]
   localPerson?: string
 }
 
@@ -91,7 +92,7 @@ export const Config: z<Config> = z.object({
   gatewayListen: z.string(),
   gatewayTlsCertFile: z.string(),
   gatewayTlsKeyFile: z.string(),
-  gatewayPublicPaths: z.array(String).default([]),
+  publicPaths: z.array(String).default([...DEFAULT_PUBLIC_PATHS]),
   localPerson: z.string(),
 })
 
@@ -138,6 +139,8 @@ export interface ResolvedConfig {
   /** `forward-auth`: a proxy asks `/auth/check`. `gateway`: this plugin's own listener is the way in. */
   readonly mode: 'forward-auth' | 'gateway'
   readonly gateway?: GatewayConfig
+  /** Static files (manifest, app icons) a request may fetch without a session, in either mode. */
+  readonly publicPaths: PublicPaths
   /** Who a request from this host itself, not through the gate, is taken to be; unset refuses such requests. */
   readonly localPerson?: string
 }
@@ -146,8 +149,6 @@ export interface GatewayConfig {
   readonly host: string
   readonly port: number
   readonly tls?: { readonly certFile: string; readonly keyFile: string }
-  /** Exact paths, or prefixes ending in `*`, passed to DSH without a session (webhooks). */
-  readonly publicPaths: readonly string[]
 }
 
 /** `host:port`, `[v6]:port`; the host must be an IP literal or `localhost`. */
@@ -183,24 +184,10 @@ function gatewayConfig(config: Config): GatewayConfig {
   const key = config.gatewayTlsKeyFile
   if ((cert === undefined || cert === '') !== (key === undefined || key === ''))
     throw new Error('dsh-oidc: gatewayTlsCertFile and gatewayTlsKeyFile go together')
-  const publicPaths = exactStrings(config.gatewayPublicPaths, 'gatewayPublicPaths')
-  for (const path of publicPaths) {
-    const base = path.endsWith('*') ? path.slice(0, -1) : path
-    if (
-      !base.startsWith('/') ||
-      base.includes('*') ||
-      base === '/' ||
-      /\/\.\.?(?:\/|$)/u.test(base)
-    )
-      throw new Error(
-        `dsh-oidc: gatewayPublicPaths entry ${JSON.stringify(path)} must be an absolute path below /, optionally ending in *`,
-      )
-  }
   return {
     host,
     port,
     ...(cert === undefined || cert === '' ? {} : { tls: { certFile: cert, keyFile: key! } }),
-    publicPaths,
   }
 }
 
@@ -392,6 +379,7 @@ export function resolveConfig(config: Config): ResolvedConfig {
     maxAuditEvents: config.maxAuditEvents ?? 5_000,
     mode: config.mode ?? 'forward-auth',
     ...(config.mode === 'gateway' ? { gateway: gatewayConfig(config) } : {}),
+    publicPaths: publicPaths(config.publicPaths ?? DEFAULT_PUBLIC_PATHS),
     ...(config.localPerson === undefined || config.localPerson === ''
       ? {}
       : { localPerson: localPerson(config.localPerson) }),

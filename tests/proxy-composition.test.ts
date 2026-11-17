@@ -118,6 +118,9 @@ describe('proxy and composition security examples', () => {
     }
     for (const name of ['Upgrade', 'Connection', 'Content-Length'])
       expect(check).toMatch(new RegExp(`proxy_set_header ${name} +"";`, 'u'))
+    // The check sees the original request from nginx's own variables, never a client header.
+    expect(check).toMatch(/proxy_set_header X-Forwarded-Method +\$request_method;/u)
+    expect(check).toMatch(/proxy_set_header X-Forwarded-Uri +\$request_uri;/u)
     expect(server).toMatch(/proxy_set_header Upgrade +\$http_upgrade;/u)
     const app = nginx.slice(appAt)
     expect(app).toContain('auth_request /_dsh_oidc_check;')
@@ -156,6 +159,8 @@ describe('proxy and composition security examples', () => {
     expect(traefikDynamic).toContain('preserveLocationHeader: true')
     expect(traefikDynamic).toContain('Host: dsh.example')
     expect(traefikStatic).toContain("address: '127.0.0.1:9180'")
+    // Only the loopback hop trusts forwarded headers, so forwardAuth's method and URI reach the check.
+    expect(traefikStatic.match(/trustedIPs: \['127\.0\.0\.1\/32'\]/gu)).toHaveLength(1)
     expect(traefikStatic).toContain('RequestPath: drop')
     expect(traefikStatic).not.toMatch(/address: '?:80'?/u)
   })

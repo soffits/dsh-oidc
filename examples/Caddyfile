@@ -46,6 +46,9 @@ https://dsh.example {
 			respond "not found" 404
 		}
 		handle {
+			# forward_auth sets X-Forwarded-Method and X-Forwarded-Uri itself, and
+			# the check reads them to let the manifest and app icons load without
+			# a session (the plugin's publicPaths).
 			forward_auth 127.0.0.1:3080 {
 				uri /auth/check
 				# Strip upgrade headers on this GET-only *auth subrequest*.

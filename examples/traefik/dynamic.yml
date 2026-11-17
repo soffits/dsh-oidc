@@ -61,7 +61,10 @@ http:
 
     # forwardAuth sends a GET without the body and without Connection and
     # Upgrade, so a WebSocket request is checked as a plain GET; the upgrade
-    # itself still reaches DSH once the check passes. Any answer outside 2xx
+    # itself still reaches DSH once the check passes. With trustForwardHeader
+    # off it sets X-Forwarded-Method and X-Forwarded-Uri from the request, and
+    # the check reads them to let the manifest and app icons through without
+    # a session (the plugin's publicPaths). Any answer outside 2xx
     # is returned to the client, so a 401, the 303 to the sign-in page, a 404
     # from a disabled plugin and a 5xx all deny; an unreachable DSH gives 502.
     dsh-oidc-check:

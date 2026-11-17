@@ -12,12 +12,11 @@ import {
   Gateway,
   downstreamHeaders,
   isLoopback,
-  isPublicPath,
-  normalizedTarget,
   rewriteCookie,
   upstreamHeaders,
   type GatewayHost,
 } from '../src/gateway.js'
+import { DEFAULT_PUBLIC_PATHS, publicPaths as publicPathSet } from '../src/public-paths.js'
 import type { SessionEndReason, SessionSummary, SessionView } from '../src/state.js'
 
 const PUBLIC_HOST = 'dsh.example'
@@ -101,7 +100,7 @@ function session(id: string): SessionView {
   }
 }
 
-function fakeHost(upstream: Upstream) {
+function fakeHost(upstream: Upstream, publicPaths: readonly string[] = DEFAULT_PUBLIC_PATHS) {
   const sessions = new Map<string, SessionView>([['alice', session('alice')]])
   const listeners = new Set<(s: SessionSummary, reason: SessionEndReason) => void>()
   const marked: string[] = []
@@ -127,6 +126,7 @@ function fakeHost(upstream: Upstream) {
     upstream: () => new URL(upstream.origin),
     authenticatedUrl: (base) => `${base}?token=${TOKEN}`,
     publicHost: PUBLIC_HOST,
+    publicPaths: publicPathSet(publicPaths),
   }
   const end = (id: string) => {
     sessions.delete(id)
@@ -146,12 +146,12 @@ afterEach(async () => {
   }
 })
 
-async function setup(publicPaths: string[] = []) {
+async function setup(publicPaths?: readonly string[]) {
   const upstream = await startUpstream()
   servers.push(upstream.server)
-  const fake = fakeHost(upstream)
+  const fake = fakeHost(upstream, publicPaths)
   const logger = { info: vi.fn(), warn: vi.fn() }
-  const gateway = new Gateway({ host: '127.0.0.1', port: 0, publicPaths }, fake.host, logger)
+  const gateway = new Gateway({ host: '127.0.0.1', port: 0 }, fake.host, logger)
   await gateway.start()
   opened.push(gateway)
   return { upstream, gateway, logger, ...fake, port: gateway.port! }
@@ -207,21 +207,6 @@ describe('gateway helpers', () => {
       expect(isLoopback(host), String(host)).toBe(false)
   })
 
-  it('matches exact public paths and star prefixes', () => {
-    expect(isPublicPath('/hooks/a', ['/hooks/*'])).toBe(true)
-    expect(isPublicPath('/hooks', ['/hooks/*'])).toBe(false)
-    expect(isPublicPath('/ping', ['/ping'])).toBe(true)
-    expect(isPublicPath('/ping/x', ['/ping'])).toBe(false)
-  })
-
-  it('normalizes the request target so the gate and DSH see one path', () => {
-    expect(normalizedTarget('/a/../api/x?q=1')).toBe('/api/x?q=1')
-    expect(normalizedTarget('/%2e%2e/api')).toBe('/api')
-    expect(normalizedTarget('/auth/signin/../../plugins/x')).toBe('/plugins/x')
-    for (const bad of [undefined, '', '*', 'http://evil/x', '//evil/x'])
-      expect(normalizedTarget(bad), String(bad)).toBeUndefined()
-  })
-
   it("replaces a client's DSH cookies with the gateway's own and keeps the rest", () => {
     expect(rewriteCookie('a=1; dsh-auth-x=stolen; b=2', NATIVE)).toBe(`a=1; b=2; ${NATIVE}`)
     expect(rewriteCookie(undefined, undefined)).toBe('')
@@ -262,11 +247,10 @@ describe('gateway listener', () => {
     const upstream = await startUpstream()
     servers.push(upstream.server)
     upstream.mintStatus = 401
-    const gateway = new Gateway(
-      { host: '127.0.0.1', port: 0, publicPaths: [] },
-      fakeHost(upstream).host,
-      { info: vi.fn(), warn: vi.fn() },
-    )
+    const gateway = new Gateway({ host: '127.0.0.1', port: 0 }, fakeHost(upstream).host, {
+      info: vi.fn(),
+      warn: vi.fn(),
+    })
     await expect(gateway.start()).rejects.toThrow(/did not mint/u)
     expect(gateway.port).toBeUndefined()
   })
@@ -321,11 +305,37 @@ describe('gateway listener', () => {
     expect(upstream.bodies).toEqual(['{"hello":"world"}'])
   })
 
-  it('lets configured public paths through without a session', async () => {
-    const { port, upstream } = await setup(['/hooks/*'])
-    expect((await send(port, '/hooks/build', {}, 'POST', 'x')).status).toBe(200)
-    expect((await send(port, '/hookshot')).status).toBe(401)
-    expect(upstream.seen.map((req) => req.url)).toEqual(['/hooks/build'])
+  it('lets GET and HEAD of the public files through anonymously, nothing else', async () => {
+    const { port, upstream } = await setup()
+    for (const path of DEFAULT_PUBLIC_PATHS) expect((await send(port, path)).status, path).toBe(200)
+    expect((await send(port, '/icon-192.png', {}, 'HEAD')).status).toBe(200)
+    // The public file is fetched as an anonymous browser would: no DSH cookie, client's dropped.
+    await send(port, '/manifest.webmanifest?v=2', { cookie: 'dsh-auth-x=stolen; s=alice' })
+    expect(upstream.seen.at(-1)?.url).toBe('/manifest.webmanifest?v=2')
+    expect(upstream.seen.at(-1)?.headers.cookie).toBe('s=alice')
+    const seen = upstream.seen.length
+    for (const [method, path] of [
+      ['POST', '/manifest.webmanifest'],
+      ['GET', '/manifest.webmanifest/x'],
+      ['GET', '/MANIFEST.webmanifest'],
+      ['GET', '/favicon.svg'],
+      ['GET', '/icon-192.png/../api/x'],
+      ['GET', '/api/notify-inbox/sw.js'],
+    ] as const)
+      expect(
+        (await send(port, path, {}, method, method === 'POST' ? 'x' : undefined)).status,
+        path,
+      ).toBe(401)
+    const { head, socket } = await rawUpgrade(port, '/manifest.webmanifest')
+    expect(head).toMatch(/^HTTP\/1\.1 401/u)
+    socket.destroy()
+    expect(upstream.seen.length).toBe(seen)
+  })
+
+  it('opens nothing without a session when the public list is empty', async () => {
+    const { port, upstream } = await setup([])
+    expect((await send(port, '/manifest.webmanifest')).status).toBe(401)
+    expect(upstream.seen).toEqual([])
   })
 
   it('closes live WebSockets and event streams when the session ends', async () => {

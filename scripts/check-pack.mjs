@@ -36,6 +36,7 @@ const expectedFiles = [
   'dist/oidc.d.ts',
   'dist/persistence.d.ts',
   'dist/policy.d.ts',
+  'dist/public-paths.d.ts',
   'dist/sender.d.ts',
   'dist/sessions-api.d.ts',
   'dist/state.d.ts',
