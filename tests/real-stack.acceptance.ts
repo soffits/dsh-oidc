@@ -66,6 +66,7 @@ interface Locator {
   waitFor(options?: Record<string, unknown>): Promise<void>
   screenshot(options?: Record<string, unknown>): Promise<Buffer>
   first(): Locator
+  getByText(text: string, options?: Record<string, unknown>): Locator
   count(): Promise<number>
 }
 
