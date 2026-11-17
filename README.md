@@ -56,32 +56,41 @@ Values for the site are supplied by the environment of the DSH process. Any vari
 | `DSH_OIDC_SENDER_CONTEXT`         | `senderContext`       | `true` or `false`                                                        |
 | `DSH_OIDC_PERSIST_SESSIONS`       | `persistSessions`     | `true` or `false`                                                        |
 | `DSH_OIDC_REQUIRE_SESSION_ON_API` | `requireSessionOnApi` | `true` or `false`                                                        |
+| `DSH_OIDC_MODE`                   | `mode`                | `forward-auth` (default) or `gateway`                                    |
+| `DSH_OIDC_GATEWAY_LISTEN`         | `gatewayListen`       | `host:port` or `[v6]:port`, IP literal                                   |
+| `DSH_OIDC_GATEWAY_TLS_CERT`       | `gatewayTlsCertFile`  | PEM file path                                                            |
+| `DSH_OIDC_GATEWAY_TLS_KEY`        | `gatewayTlsKeyFile`   | PEM file path                                                            |
+| `DSH_OIDC_GATEWAY_PUBLIC_PATHS`   | `gatewayPublicPaths`  | JSON array of paths; a trailing `*` makes a prefix                       |
 
 A malformed value stops the plugin with a message naming the variable, never the value. At startup the log names which fields came from the environment.
 
 DSH's Plugins page edits only fields a plugin declares volatile, and this plugin declares none, because a change to any of them must restart the routes. So the page shows the bundle, its switch and the row, but no editable form; there is nothing in the UI that could override an environment value. The remaining fields (session lifetimes, scopes, group mode, required claims and so on) are ordinary row config: add them under `config:` in an override of the `soffits-oidc` row in the profile patch. Extra allow categories there still apply, since categories are ANDed and can only narrow admission.
 
-| Field                       | Meaning                                                                                                                                                             |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `issuer`                    | Exact HTTPS issuer identifier used for discovery and token validation.                                                                                              |
-| `clientId`                  | Exact OIDC client identifier.                                                                                                                                       |
-| `clientSecretRef`           | Optional DSH credential reference name. The secret value is resolved for each login/callback/logout operation and is never configuration. Omit for a public client. |
-| `publicOrigin`              | Fixed HTTPS origin, path `/`; never derived from `Host` or forwarded headers.                                                                                       |
-| `allowedSubjects`           | Exact `{ issuer, subject }` tuples.                                                                                                                                 |
-| `allowedEmails`             | Exact email values as an additional policy category, never identity; admission also requires literal boolean `email_verified: true`.                                |
-| `allowedGroups`             | Exact case-sensitive values from `groupsClaim`.                                                                                                                     |
-| `groupMode`                 | `any` or `all` for configured allowed groups.                                                                                                                       |
-| `requiredClaims`            | Exact allowed values per required claim; categories are ANDed.                                                                                                      |
-| `sessionMaxAgeSeconds`      | Absolute local OIDC-session lifetime (default 8 hours).                                                                                                             |
-| `sessionIdleTimeoutSeconds` | Idle expiry (default 30 minutes). Provider policy changes do not invalidate an already-issued session before these limits.                                          |
-| `trustedProxies`            | Socket peers (IPs or CIDR ranges) allowed to set `X-Dsh-Oidc-Client-Ip`. Default `["127.0.0.0/8", "::1"]`. See [Trusted proxies](#trusted-proxies).                 |
-| `directLogin`               | Send signed-out browser navigations straight to the provider instead of the bundled sign-in page (default `false`).                                                 |
-| `allowAnyUser`              | Admit every account the provider signs in, when access is already restricted at the provider (an application group, for example). Default `false`.                  |
-| `senderContext`             | Tell the model who wrote each Web prompt (see [Sender context](#sender-context)). Default `false`.                                                                  |
-| `persistSessions`           | Keep sign-ins and the audit log across DSH restarts (see [Session persistence](#session-persistence)). Default `false`.                                             |
-| `requireSessionOnApi`       | Refuse `/api` requests that carry DSH's cookie but no live OIDC session (see [The /api guard](#the-api-guard)). Default `true`.                                     |
-| `auditRetentionDays`        | How long audit events are kept (see [Audit log](#audit-log)). Default 90.                                                                                           |
-| `maxAuditEvents`            | Most audit events kept; the oldest go first. Default 5000.                                                                                                          |
+| Field                                     | Meaning                                                                                                                                                             |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `issuer`                                  | Exact HTTPS issuer identifier used for discovery and token validation.                                                                                              |
+| `clientId`                                | Exact OIDC client identifier.                                                                                                                                       |
+| `clientSecretRef`                         | Optional DSH credential reference name. The secret value is resolved for each login/callback/logout operation and is never configuration. Omit for a public client. |
+| `publicOrigin`                            | Fixed HTTPS origin, path `/`; never derived from `Host` or forwarded headers.                                                                                       |
+| `allowedSubjects`                         | Exact `{ issuer, subject }` tuples.                                                                                                                                 |
+| `allowedEmails`                           | Exact email values as an additional policy category, never identity; admission also requires literal boolean `email_verified: true`.                                |
+| `allowedGroups`                           | Exact case-sensitive values from `groupsClaim`.                                                                                                                     |
+| `groupMode`                               | `any` or `all` for configured allowed groups.                                                                                                                       |
+| `requiredClaims`                          | Exact allowed values per required claim; categories are ANDed.                                                                                                      |
+| `sessionMaxAgeSeconds`                    | Absolute local OIDC-session lifetime (default 8 hours).                                                                                                             |
+| `sessionIdleTimeoutSeconds`               | Idle expiry (default 30 minutes). Provider policy changes do not invalidate an already-issued session before these limits.                                          |
+| `trustedProxies`                          | Socket peers (IPs or CIDR ranges) allowed to set `X-Dsh-Oidc-Client-Ip`. Default `["127.0.0.0/8", "::1"]`. See [Trusted proxies](#trusted-proxies).                 |
+| `directLogin`                             | Send signed-out browser navigations straight to the provider instead of the bundled sign-in page (default `false`).                                                 |
+| `allowAnyUser`                            | Admit every account the provider signs in, when access is already restricted at the provider (an application group, for example). Default `false`.                  |
+| `senderContext`                           | Tell the model who wrote each Web prompt (see [Sender context](#sender-context)). Default `false`.                                                                  |
+| `persistSessions`                         | Keep sign-ins and the audit log across DSH restarts (see [Session persistence](#session-persistence)). Default `false`.                                             |
+| `requireSessionOnApi`                     | Refuse `/api` requests that carry DSH's cookie but no live OIDC session (see [The /api guard](#the-api-guard)). Default `true`.                                     |
+| `auditRetentionDays`                      | How long audit events are kept (see [Audit log](#audit-log)). Default 90.                                                                                           |
+| `maxAuditEvents`                          | Most audit events kept; the oldest go first. Default 5000.                                                                                                          |
+| `mode`                                    | `forward-auth` (a proxy asks `/auth/check`) or `gateway` (see [Gateway mode](#gateway-mode)). Default `forward-auth`.                                               |
+| `gatewayListen`                           | Address the gateway listens on, such as `0.0.0.0:3080`. Required in gateway mode.                                                                                   |
+| `gatewayTlsCertFile`, `gatewayTlsKeyFile` | PEM certificate and key for the gateway to serve HTTPS itself; leave both out behind a TLS proxy.                                                                   |
+| `gatewayPublicPaths`                      | Paths the gateway passes without a session, for webhooks. Default none.                                                                                             |
 
 At least one allow category is mandatory unless `allowAnyUser` is `true`; it cannot be switched on by an empty list or a missing value. Every configured category is ANDed; values within subject, email, and `any` group categories are ORed. Match comparison is byte-exact with no case folding or substring behavior. Explicit empty policy lists are invalid. Group claims must be nonempty bounded arrays of unique nonempty bounded strings; scalar groups always deny. Custom required claims may be one bounded nonempty string or the same bounded unique-string array shape.
 
@@ -146,6 +155,16 @@ ctx.connection.fetch.register({
 The service is always on; it reads only this plugin's own session cookie, the same check as `senderContext`. It is `null` outside a request, for a request without an OIDC session (an API client with DSH's own token, when the [/api guard](#the-api-guard) is off), and in work a request started that keeps running after the request has settled, such as an agent turn. Routes registered straight on the web server (`ctx.webServer.register`) are outside `/api` and see `null`.
 
 The name and shape aren't tied to OIDC: another sign-in plugin can provide `requestIdentity` with the same interface, so consumers work with whichever one is installed. Read it with `ctx.get('requestIdentity')` at request time rather than injecting it, if your plugin should also work without it.
+
+### Gateway mode
+
+By default (`mode: forward-auth`) the plugin relies on a reverse proxy that asks `/auth/check` before every request. With `mode: gateway` the plugin opens its own listener (`gatewayListen`) and becomes the only way in: DSH's web server moves to loopback, and the plugin refuses to start if it isn't there, so no second door stays open. A proxy in front for TLS is still fine, it just makes no auth decision any more; or give the gateway its own certificate with `gatewayTlsCertFile` and `gatewayTlsKeyFile`.
+
+Every request and WebSocket upgrade passes one check. The sign-in routes are answered by the gateway. Paths in `gatewayPublicPaths` (for webhooks; exact, or a prefix ending in `*`) go through without a session. Everything else needs a live session: a signed-out navigation goes to the sign-in page, anything else gets 401, and `/connect` and unknown `/auth/*` paths get 404. The decision and the forwarded request use the same normalized path, so dot segments can't steer one past the other.
+
+Allowed traffic is streamed to DSH's loopback origin with hop-by-hop headers removed and `Host`, `Origin` and `Sec-Fetch-*` kept, since DSH's own checks read them. The gateway trades DSH's launch token for DSH's browser cookie itself, at start and every six hours, adds that cookie to each request it forwards, drops any DSH cookie a client sends, and strips DSH's cookies from responses. Browsers never hold DSH's 30-day credential or see its launch token, so ending a session here is complete: the gateway also tracks each WebSocket and long response by session and closes them when the session signs out, is revoked or expires (checked every minute).
+
+The client address comes from the socket peer, or from `X-Dsh-Oidc-Client-Ip` when the peer is in `trustedProxies`. If the gateway can't start (port taken, DSH won't mint its cookie), nothing answers on its address; recovery is on the host. Forward-auth stays the default for this release.
 
 ### Sign-in settings page
 

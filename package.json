@@ -1,6 +1,6 @@
 {
   "name": "@soffits/dsh-oidc",
-  "version": "0.3.0-alpha.11",
+  "version": "0.3.0-alpha.12",
   "description": "Provider-neutral OpenID Connect admission for DeepSeek Harness Web",
   "type": "module",
   "license": "MIT",
@@ -59,6 +59,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:acceptance": "node scripts/integration-harness.mjs",
+    "test:acceptance:gateway": "node scripts/integration-harness.mjs --gateway",
     "check:release": "npm run check && npm audit --audit-level=low && npm run test:acceptance",
     "pack:check": "node scripts/check-pack.mjs",
     "secret:scan": "node scripts/secret-scan.mjs",

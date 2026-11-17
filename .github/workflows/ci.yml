@@ -67,3 +67,19 @@ jobs:
           DSH_OIDC_CADDY_BIN: ${{ runner.temp }}/caddy
           DSH_OIDC_DSH_VERSION: ${{ inputs.dsh_version || 'latest' }}
         run: npm run test:acceptance
+
+  gateway-acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Gateway acceptance (DSH + synthetic OIDC + Chromium, no proxy)
+        env:
+          DSH_OIDC_DSH_VERSION: ${{ inputs.dsh_version || 'latest' }}
+        run: npm run test:acceptance:gateway

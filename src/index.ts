@@ -3,7 +3,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-credentials'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
-import { OidcAdmission } from './admission.js'
+import { readFileSync } from 'node:fs'
+import { OidcAdmission, clientAddress, setGatewayClientIp, wantsNavigation } from './admission.js'
+import { Gateway, isLoopback } from './gateway.js'
 import { applyApiGuard } from './api-guard.js'
 import { AUDIT_EVENT, AUDIT_TABLE, AuditLog, auditDomain, type AuditTable } from './audit.js'
 import { RuntimeCompatibilityError, assertRuntimeCompatibility } from './compatibility.js'
@@ -65,6 +67,7 @@ export async function apply(ctx: Context, rawConfig: OidcConfig | undefined): Pr
   if (environment.fields.length > 0)
     ctx.logger.info(`dsh-oidc: from environment: ${environment.fields.join(', ')}`)
   assertRuntimeCompatibility(ctx)
+  if (config.mode === 'gateway') assertGatewayHost(ctx)
   const pinned = Object.entries(ENVIRONMENT_FIELDS)
     .filter(([, field]) => environment.fields.includes(field))
     .map(([variable]) => variable)
@@ -96,6 +99,19 @@ export async function apply(ctx: Context, rawConfig: OidcConfig | undefined): Pr
       audit.table(AUDIT_TABLE),
     )
   })
+}
+
+/**
+ * Gateway mode is only a gate when it is the only way in, so DSH's own
+ * listener must be on loopback; refuse to start otherwise.
+ */
+function assertGatewayHost(ctx: Context): void {
+  if (typeof ctx.webServer.getOrigin !== 'function')
+    throw new RuntimeCompatibilityError(['ctx.webServer.getOrigin() (gateway upstream)'])
+  if (!isLoopback(ctx.webServer.host))
+    throw new Error(
+      `dsh-oidc: mode gateway needs DSH's web server on loopback (--host 127.0.0.1), not ${JSON.stringify(ctx.webServer.host)}, or a second door stays open`,
+    )
 }
 
 function member(target: unknown, key: string): unknown {
@@ -157,7 +173,64 @@ async function serve(
   ]
   for (const route of routes)
     ctx.effect(() => ctx.webServer.register(route), `dsh-oidc: ${route.path}`)
-  const status = () => statusView(config, pinned, admission.audit.recent(STATUS_AUDIT_EVENTS))
+  if (config.gateway !== undefined) {
+    const gatewayConfig = config.gateway
+    const tls =
+      gatewayConfig.tls === undefined
+        ? undefined
+        : {
+            cert: readFileSync(gatewayConfig.tls.certFile),
+            key: readFileSync(gatewayConfig.tls.keyFile),
+          }
+    const gateway = new Gateway(
+      gatewayConfig,
+      {
+        routes: new Map(routes.map((route) => [route.path, route.handler])),
+        session: (req) => admission.currentSession(req),
+        signInPath: config.directLogin ? '/auth/login?nav=1' : '/auth/signin',
+        wantsNavigation,
+        clientIp: (req) => clientAddress(req, config.trustedProxies, true),
+        markClientIp: setGatewayClientIp,
+        onSessionEnd: (listener) => admission.sessions.onEnd(listener),
+        sweep: () => {
+          admission.sessions.sweep()
+        },
+        upstream: () => new URL(ctx.webServer.getOrigin()),
+        authenticatedUrl: (base) => ctx.connection.authenticatedUrl(base),
+        publicHost: config.publicOrigin.host,
+      },
+      ctx.logger,
+      tls,
+    )
+    ctx.effect(() => {
+      const state = { stopped: false }
+      void (async () => {
+        // DSH's own listener binds after plugins load; wait for it.
+        for (let attempt = 0; !state.stopped; attempt += 1) {
+          try {
+            ctx.webServer.getOrigin()
+            break
+          } catch {
+            await new Promise((resolve) => setTimeout(resolve, Math.min(2_000, 50 * 2 ** attempt)))
+          }
+        }
+        if (state.stopped) return
+        try {
+          await gateway.start()
+        } catch (error) {
+          ctx.logger.warn(
+            `dsh-oidc: gateway did not start, so nothing answers on its address: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        }
+      })()
+      return () => {
+        state.stopped = true
+        void gateway.stop()
+      }
+    }, 'dsh-oidc: gateway listener')
+  }
+  const status = () =>
+    statusView(config, pinned, admission.audit.recent(STATUS_AUDIT_EVENTS), config.mode)
   for (const route of sessionRoutes(admission, status))
     ctx.effect(() => ctx.connection.fetch.register(route), `dsh-oidc: ${route.path}`)
   const principalOf = (req: IncomingMessage) => admission.principalOf(req)
