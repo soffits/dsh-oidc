@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { createElement } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // The real primitives are DSH's shared page modules; the browser half is
@@ -6,8 +7,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
   Menu: () => null,
   IconSettingsOutlineMedium: () => null,
+  Button: ({ children, ...props }: Record<string, unknown>) =>
+    createElement('button', props, children as never),
+  Tag: ({ children }: { children?: unknown }) => createElement('span', null, children as never),
 }))
-import { apply, inject, LAUNCHER_PRIORITY } from '../src/client/index.js'
+import { apply, inject, LAUNCHER_PRIORITY, SECTION_ID, SECTION_ORDER } from '../src/client/index.js'
+import { SignInSection } from '../src/client/SignInSection.js'
 import { NS, en, zh } from '../src/client/locales.js'
 import {
   fetchProfile,
@@ -122,6 +127,7 @@ describe('client plugin', () => {
           dictionaries.push(`${ns}:${locale}`)
           return () => undefined
         },
+        bind: (ns: string) => (key: string) => `${ns}/${key}`,
       },
       slots: {
         inject(_name: string, register: () => () => void) {
@@ -136,8 +142,16 @@ describe('client plugin', () => {
     expect(inject).toEqual(['slots', 'locale'])
     apply(ctx as never)
     expect(dictionaries).toEqual(['soffits-oidc:en', 'soffits-oidc:zh'])
-    expect(registrations).toHaveLength(1)
-    const [registration] = registrations
+    expect(registrations).toHaveLength(2)
+    const [registration, section] = registrations
+    expect(section?.options).toMatchObject({
+      name: 'settings.section',
+      id: SECTION_ID,
+      order: SECTION_ORDER,
+      locale: NS,
+    })
+    expect((section?.options.label as () => string)()).toBe('soffits-oidc/nav')
+    expect(section?.component).toBe(SignInSection)
     expect(registration?.options).toMatchObject({
       name: 'settings.launcher',
       priority: LAUNCHER_PRIORITY,

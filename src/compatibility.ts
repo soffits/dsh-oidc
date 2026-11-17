@@ -10,6 +10,7 @@
 export const REQUIRED_SEAMS = [
   { service: 'webServer', member: 'register', use: 'exact /auth/* route registration' },
   { service: 'connection', member: 'authenticatedUrl', use: 'native DSH cookie bootstrap' },
+  { service: 'connection', member: 'fetch.register', use: 'sessions and status endpoints' },
   { service: 'credentials', member: 'resolve', use: 'client secret lookup' },
 ] as const
 
@@ -40,7 +41,10 @@ export function assertRuntimeCompatibility(ctx: unknown): void {
   const missing: string[] = []
   if (typeof member(ctx, 'effect') !== 'function') missing.push('ctx.effect()')
   for (const seam of REQUIRED_SEAMS) {
-    if (typeof member(member(ctx, seam.service), seam.member) !== 'function')
+    const found = seam.member
+      .split('.')
+      .reduce<unknown>((target, name) => member(target, name), member(ctx, seam.service))
+    if (typeof found !== 'function')
       missing.push(`ctx.${seam.service}.${seam.member}() (${seam.use})`)
   }
   if (missing.length > 0) throw new RuntimeCompatibilityError(missing)

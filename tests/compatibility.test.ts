@@ -29,13 +29,21 @@ export type SeamTypes = [
     CredentialProvider['resolve'] extends (...args: never[]) => Promise<unknown> ? true : false
   >,
   Assert<Context['effect'] extends (...args: never[]) => unknown ? true : false>,
+  Assert<
+    HostConnectionHandle['fetch']['register'] extends (route: never) => () => Promise<void>
+      ? true
+      : false
+  >,
 ]
 
 function host(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     effect: () => undefined,
     webServer: { register: () => () => undefined },
-    connection: { authenticatedUrl: (url: string) => url },
+    connection: {
+      authenticatedUrl: (url: string) => url,
+      fetch: { register: () => async () => undefined },
+    },
     credentials: { resolve: async () => undefined },
     on: () => undefined,
     provide: () => () => undefined,
@@ -55,7 +63,9 @@ describe('DSH host seam check', () => {
     expect(name).toBe('soffits-oidc')
     expect(inject).toEqual(['webServer', 'connection', 'credentials'])
     expect(typeof apply).toBe('function')
-    expect(REQUIRED_SEAMS.map(({ service }) => service).sort()).toEqual([...inject].sort())
+    expect([...new Set(REQUIRED_SEAMS.map(({ service }) => service))].sort()).toEqual(
+      [...inject].sort(),
+    )
   })
 
   it('declares DSH peer ranges instead of exact versions', async () => {
@@ -76,7 +86,16 @@ describe('DSH host seam check', () => {
 
   it.each([
     ['webServer', { webServer: {} }, 'ctx.webServer.register()'],
-    ['connection', { connection: { authenticatedUrl: 'not-a-function' } }, 'authenticatedUrl'],
+    [
+      'connection',
+      { connection: { authenticatedUrl: 'not-a-function', fetch: { register: () => undefined } } },
+      'authenticatedUrl',
+    ],
+    [
+      'connection fetch',
+      { connection: { authenticatedUrl: (url: string) => url } },
+      'ctx.connection.fetch.register()',
+    ],
     ['credentials', { credentials: undefined }, 'ctx.credentials.resolve()'],
     ['effect', { effect: undefined }, 'ctx.effect()'],
   ])('names a missing %s seam', (_label, overrides, expected) => {
@@ -143,7 +162,8 @@ describe('DSH host seam check', () => {
       { kind: 'exact', path: '/_dsh-oidc/session' },
       { kind: 'exact', path: '/auth/logout' },
     ])
-    expect(effects).toHaveLength(6)
+    // Six web routes plus the three /api/dsh-oidc Fetch routes.
+    expect(effects).toHaveLength(9)
     for (const dispose of effects) dispose()
     expect(routes).toEqual([])
   })

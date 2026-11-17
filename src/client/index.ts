@@ -1,5 +1,6 @@
 /**
- * Browser half of @soffits/dsh-oidc: the sidebar account button.
+ * Browser half of @soffits/dsh-oidc: the sidebar account button and the
+ * Sign-in settings page (sessions, provider summary, recent activity).
  *
  * It occupies `settings.launcher`, the seat at the sidebar foot that DSH's own
  * DeepSeek account menu fills, so it inherits that seat's geometry, the
@@ -10,6 +11,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { AccountMenu, type ProfileSource } from './AccountMenu.js'
+import { SignInSection, defaultApi } from './SignInSection.js'
 import { NS, en, zh } from './locales.js'
 import { fetchProfile, submitLogout, type AccountProfile } from './profile.js'
 import { installStyles } from './styles.js'
@@ -18,6 +20,7 @@ import { installStyles } from './styles.js'
 interface ClientServices {
   locale: {
     register(ns: string, locale: string, dict: Record<string, string>): () => void
+    bind(ns: string): (key: string) => string
   }
   slots: {
     inject(name: string, register: () => () => void): () => void
@@ -26,6 +29,10 @@ interface ClientServices {
 }
 
 export const inject = ['slots', 'locale']
+
+/** Settings navigation position: after Account (-10), before General (0). */
+export const SECTION_ORDER = -5
+export const SECTION_ID = 'soffits-oidc'
 
 /** Registration priority in `settings.launcher`; lower renders, the shipped menu uses 0. */
 export const LAUNCHER_PRIORITY = -1
@@ -106,5 +113,22 @@ export function apply(ctx: Context): void {
         ),
       ),
     'dsh-oidc: sidebar account launcher',
+  )
+  ctx.effect(
+    () =>
+      services.slots.inject('settings.section', () =>
+        services.slots.register(
+          {
+            name: 'settings.section',
+            id: SECTION_ID,
+            order: SECTION_ORDER,
+            label: () => services.locale.bind(NS)('nav'),
+            locale: NS,
+            inject: () => ({ api: defaultApi }),
+          },
+          SignInSection,
+        ),
+      ),
+    'dsh-oidc: Sign-in settings page',
   )
 }
