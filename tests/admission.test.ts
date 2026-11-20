@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { Readable } from 'node:stream'
+import { PassThrough, Readable } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -805,6 +805,42 @@ describe('OIDC route admission', () => {
     const stale = response()
     admission.check(request('GET', '/auth/check', { cookie: session }), stale.value)
     expect(stale.captured.status).toBe(401)
+  })
+})
+
+describe('logout body', () => {
+  it('answers when the client goes away mid-body instead of waiting forever', async () => {
+    const { admission } = harness()
+    const started = await login(admission)
+    const callback = response()
+    await admission.callback(
+      request('GET', `/auth/callback?state=${started.state}&code=c`, { cookie: started.cookie }),
+      callback.value,
+    )
+    const session = cookieFrom(callback.captured.headers, SESSION_COOKIE)
+    const body = new PassThrough()
+    Object.assign(body, {
+      method: 'POST',
+      url: '/auth/logout',
+      headers: {
+        host: 'dsh.example',
+        cookie: session,
+        origin: 'https://dsh.example',
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      socket: { remoteAddress: '127.0.0.1' },
+    })
+    const res = response()
+    const answered = admission.logout(body as unknown as IncomingMessage, res.value)
+    body.write('csrf=')
+    body.destroy()
+    const outcome = await Promise.race([
+      answered.then(() => 'answered'),
+      new Promise((resolve) => setTimeout(() => resolve('hung'), 500)),
+    ])
+    expect(outcome).toBe('answered')
+    expect(res.captured.status).toBe(403)
+    expect(admission.listSessions()).toHaveLength(1)
   })
 })
 

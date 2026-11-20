@@ -158,6 +158,7 @@ function formBody(req: IncomingMessage, maximum = 16_384): Promise<URLSearchPara
     req.on('end', () => {
       if (!exceeded) resolve(new URLSearchParams(Buffer.concat(chunks).toString('utf8')))
     })
+    req.on('close', () => resolve(undefined))
     req.on('error', reject)
   })
 }
