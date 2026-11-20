@@ -27,6 +27,7 @@ const expectedFiles = [
   'dist/client/styles.d.ts',
   'dist/config.d.ts',
   'dist/env.d.ts',
+  'dist/failure.d.ts',
   'dist/gateway.d.ts',
   'dist/identity.d.ts',
   'dist/index.d.ts',

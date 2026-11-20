@@ -1,10 +1,11 @@
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { isIP } from 'node:net'
 import type { CredentialRef, ResolvedCredential } from '@deepseek-ai/dsh-credentials'
 import { AuditLog, type AuditPerson } from './audit.js'
+import { failureReason } from './failure.js'
 import type { ResolvedConfig, TrustedProxies } from './config.js'
-import type { OidcProtocol } from './oidc.js'
+import { OidcValidationError, type OidcProtocol } from './oidc.js'
 import { normalizedTarget, targetPath } from './public-paths.js'
 import { authorizeClaims, type Principal } from './policy.js'
 import {
@@ -157,11 +158,17 @@ function formBody(req: IncomingMessage, maximum = 16_384): Promise<URLSearchPara
     req.on('end', () => {
       if (!exceeded) resolve(new URLSearchParams(Buffer.concat(chunks).toString('utf8')))
     })
+    req.on('close', () => resolve(undefined))
     req.on('error', reject)
   })
 }
 
-const SIGNIN_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Sign in · DSH</title><style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#111;color:#eee}main{text-align:center;padding:2rem}a{display:inline-block;margin-top:1rem;padding:.6rem 1.4rem;background:#2563eb;color:#fff;border-radius:.5rem;text-decoration:none;font-weight:600}</style></head><body><main><h1>DSH</h1><p>Authentication required.</p><a href="/auth/login?nav=1" rel="nofollow">Sign in</a></main></body></html>`
+const SIGNIN_STYLE =
+  'body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#111;color:#eee}main{text-align:center;padding:2rem}a{display:inline-block;margin-top:1rem;padding:.6rem 1.4rem;background:#2563eb;color:#fff;border-radius:.5rem;text-decoration:none;font-weight:600}'
+
+const SIGNIN_CSP = `default-src 'none'; style-src 'sha256-${createHash('sha256').update(SIGNIN_STYLE).digest('base64')}'; base-uri 'none'; frame-ancestors 'none'`
+
+const SIGNIN_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Sign in · DSH</title><style>${SIGNIN_STYLE}</style></head><body><main><h1>DSH</h1><p>Authentication required.</p><a href="/auth/login?nav=1" rel="nofollow">Sign in</a></main></body></html>`
 
 export function wantsNavigation(req: IncomingMessage): boolean {
   const fetchMode = header(req, 'sec-fetch-mode')
@@ -219,7 +226,8 @@ export class OidcAdmission {
       new AuditLog({
         retentionMilliseconds: config.auditRetentionDays * 86_400_000,
         maxEvents: config.maxAuditEvents,
-        onError: () => logger.warn('dsh-oidc: audit log write failed'),
+        onError: (error) =>
+          logger.warn(`dsh-oidc: audit log write failed: ${failureReason(error)}`),
         emit: () => undefined,
       })
   }
@@ -245,7 +253,7 @@ export class OidcAdmission {
     const reference: CredentialRef | undefined = this.config.clientSecretRef
     if (reference === undefined) return undefined
     const resolved = await this.credentials.resolve(reference)
-    if (resolved === undefined) throw new Error('configured OIDC client credential is unavailable')
+    if (resolved === undefined) throw new OidcValidationError('OIDC_CLIENT_SECRET_UNAVAILABLE')
     return resolved.value
   }
 
@@ -267,8 +275,10 @@ export class OidcAdmission {
         secureCookie(TRANSACTION_COOKIE, transaction.id, this.config.transactionMaxAgeSeconds),
       ])
       this.logger.info(`dsh-oidc login started correlation=${correlation}`)
-    } catch {
-      this.logger.warn(`dsh-oidc login failed correlation=${correlation}`)
+    } catch (error) {
+      this.logger.warn(
+        `dsh-oidc login failed correlation=${correlation} reason=${failureReason(error)}`,
+      )
       plain(res, 503, 'authentication unavailable\n')
     }
   }
@@ -346,8 +356,10 @@ export class OidcAdmission {
         expiredCookie(TRANSACTION_COOKIE),
       ])
       this.logger.info(`dsh-oidc login admitted correlation=${correlation}`)
-    } catch {
-      this.logger.warn(`dsh-oidc callback failed correlation=${correlation}`)
+    } catch (error) {
+      this.logger.warn(
+        `dsh-oidc callback failed correlation=${correlation} reason=${failureReason(error)}`,
+      )
       plain(res, 400, 'invalid authentication response\n')
     }
   }
@@ -358,8 +370,7 @@ export class OidcAdmission {
     res.writeHead(200, {
       ...SECURITY_HEADERS,
       'content-type': 'text/html; charset=utf-8',
-      'content-security-policy':
-        "default-src 'none'; style 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+      'content-security-policy': SIGNIN_CSP,
     })
     res.end(req.method === 'HEAD' ? undefined : SIGNIN_HTML)
   }

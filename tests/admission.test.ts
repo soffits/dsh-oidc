@@ -1,4 +1,5 @@
-import { Readable } from 'node:stream'
+import { createHash } from 'node:crypto'
+import { PassThrough, Readable } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -8,7 +9,12 @@ import {
   type CredentialResolver,
 } from '../src/admission.js'
 import { resolveConfig } from '../src/config.js'
-import type { AuthorizationStart, CallbackChecks, OidcProtocol } from '../src/oidc.js'
+import {
+  OidcValidationError,
+  type AuthorizationStart,
+  type CallbackChecks,
+  type OidcProtocol,
+} from '../src/oidc.js'
 import { SESSION_COOKIE, TRANSACTION_COOKIE } from '../src/state.js'
 
 interface CapturedResponse {
@@ -185,6 +191,29 @@ describe('OIDC route admission', () => {
     expect(method.captured).toMatchObject({ status: 405, headers: { allow: 'GET, HEAD' } })
   })
 
+  it("lets the sign-in page's own style through its CSP and nothing else", () => {
+    const { admission } = harness()
+    const page = response()
+    admission.signin(request('GET', '/auth/signin'), page.value)
+    const policy = new Map(
+      String(page.captured.headers?.['content-security-policy'])
+        .split(';')
+        .map((directive) => directive.trim().split(/\s+/u))
+        .map(([name, ...values]) => [name!, values]),
+    )
+    expect([...policy.keys()].sort()).toEqual([
+      'base-uri',
+      'default-src',
+      'frame-ancestors',
+      'style-src',
+    ])
+    expect(policy.get('default-src')).toEqual(["'none'"])
+    const styles = [...String(page.captured.body).matchAll(/<style>([^<]*)<\/style>/gu)]
+    expect(styles).toHaveLength(1)
+    const digest = createHash('sha256').update(styles[0]![1]!).digest('base64')
+    expect(policy.get('style-src')).toEqual([`'sha256-${digest}'`])
+  })
+
   it('sends signed-out navigations straight to the provider with directLogin', async () => {
     const direct = resolveConfig({
       issuer: 'https://id.example/issuer',
@@ -351,6 +380,48 @@ describe('OIDC route admission', () => {
     await admission.login(request('GET', '/auth/login'), res.value)
     expect(res.captured).toMatchObject({ status: 503, body: 'authentication unavailable\n' })
     expect(protocol.callbackChecks).toBeUndefined()
+    expect(messages.join('\n')).toMatch(
+      /login failed correlation=[0-9a-f]{16} reason=OidcValidationError OIDC_CLIENT_SECRET_UNAVAILABLE$/mu,
+    )
+  })
+
+  it('logs why a callback failed without the error text', async () => {
+    const reasons: Array<[unknown, string]> = [
+      [new OidcValidationError('OIDC_AZP_MISMATCH'), 'OidcValidationError OIDC_AZP_MISMATCH'],
+      [
+        Object.assign(new Error('provider said code=abc token=xyz'), {
+          name: 'ResponseBodyError',
+          code: 'OAUTH_RESPONSE_BODY_ERROR',
+          error: 'invalid_grant',
+          status: 400,
+        }),
+        'ResponseBodyError OAUTH_RESPONSE_BODY_ERROR error=invalid_grant status=400',
+      ],
+      [
+        new TypeError('fetch failed https://id.example/token?code=abc', {
+          cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+        }),
+        'TypeError <- Error ECONNREFUSED',
+      ],
+    ]
+    for (const [error, reason] of reasons) {
+      const { admission, protocol, messages } = harness()
+      protocol.callback = async () => {
+        throw error
+      }
+      const started = await login(admission)
+      const res = response()
+      await admission.callback(
+        request('GET', `/auth/callback?code=abc&state=${started.state}`, {
+          cookie: started.cookie,
+        }),
+        res.value,
+      )
+      expect(res.captured.status).toBe(400)
+      const logged = messages.find((message) => message.includes('callback failed'))
+      expect(logged).toMatch(new RegExp(`correlation=[0-9a-f]{16} reason=${reason}$`, 'u'))
+      expect(logged).not.toMatch(/abc|xyz|fetch failed|provider said/u)
+    }
   })
 
   it('runs one-use authorization and bootstraps the unchanged native DSH connection', async () => {
@@ -734,6 +805,42 @@ describe('OIDC route admission', () => {
     const stale = response()
     admission.check(request('GET', '/auth/check', { cookie: session }), stale.value)
     expect(stale.captured.status).toBe(401)
+  })
+})
+
+describe('logout body', () => {
+  it('answers when the client goes away mid-body instead of waiting forever', async () => {
+    const { admission } = harness()
+    const started = await login(admission)
+    const callback = response()
+    await admission.callback(
+      request('GET', `/auth/callback?state=${started.state}&code=c`, { cookie: started.cookie }),
+      callback.value,
+    )
+    const session = cookieFrom(callback.captured.headers, SESSION_COOKIE)
+    const body = new PassThrough()
+    Object.assign(body, {
+      method: 'POST',
+      url: '/auth/logout',
+      headers: {
+        host: 'dsh.example',
+        cookie: session,
+        origin: 'https://dsh.example',
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      socket: { remoteAddress: '127.0.0.1' },
+    })
+    const res = response()
+    const answered = admission.logout(body as unknown as IncomingMessage, res.value)
+    body.write('csrf=')
+    body.destroy()
+    const outcome = await Promise.race([
+      answered.then(() => 'answered'),
+      new Promise((resolve) => setTimeout(() => resolve('hung'), 500)),
+    ])
+    expect(outcome).toBe('answered')
+    expect(res.captured.status).toBe(403)
+    expect(admission.listSessions()).toHaveLength(1)
   })
 })
 

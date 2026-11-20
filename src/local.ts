@@ -12,12 +12,13 @@ import type { RequestIdentity } from './identity.js'
  * refused like any other request without a session.
  *
  * A request counts as local when its TCP peer is one of this host's own
- * addresses (loopback or an address of one of its network interfaces) and it
- * carries no `X-Dsh-Oidc-Client-Ip` header. A proxy on another host or in
- * another container connects from its own address and never matches; the
- * gateway connects from loopback but always sets the header. That only holds
- * while every way in from outside goes through the gate: a proxy on this same
- * host that forwards without forward-auth would make outside requests look local.
+ * addresses (loopback or an address of one of its network interfaces), it
+ * carries no `X-Dsh-Oidc-Client-Ip` header, and its `Host` names something
+ * other than the public origin's host, such as the address DSH listens on.
+ * A proxy on another host or in another container connects from its own
+ * address and never matches; the gateway connects from loopback but always
+ * sets the header; and a proxy on this same host forwards the public `Host`,
+ * so outside traffic is not taken for local even on a route that skips the gate.
  */
 export const LOCAL_PROVIDER = 'local'
 
@@ -42,12 +43,24 @@ export function ownAddresses(
   return addresses
 }
 
+function hostname(host: string | undefined): string | undefined {
+  if (host === undefined || host === '') return undefined
+  try {
+    return new URL(`http://${host}`).hostname.replace(/\.$/u, '')
+  } catch {
+    return undefined
+  }
+}
+
 /** Whether the request came from this host and not through the gate or a proxy. */
 export function isLocalRequest(
   req: IncomingMessage,
+  publicHostname: string,
   addresses: ReadonlySet<string> = ownAddresses(),
 ): boolean {
   if (req.headers[CLIENT_IP_HEADER] !== undefined) return false
+  const host = hostname(req.headers.host)
+  if (host === undefined || host === hostname(publicHostname)) return false
   const peer = req.socket.remoteAddress
   if (peer === undefined) return false
   const address = unmapped(peer)

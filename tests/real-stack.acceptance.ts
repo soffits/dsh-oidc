@@ -91,7 +91,7 @@ interface Page {
   waitForURL(url: string, options?: Record<string, unknown>): Promise<void>
   waitForResponse(
     predicate: (response: { url(): string }) => boolean,
-  ): Promise<{ status(): number }>
+  ): Promise<{ status(): number; text(): Promise<string> }>
   reload(options?: Record<string, unknown>): Promise<{ status(): number } | null>
   evaluate<R, A>(callback: (argument: A) => R | Promise<R>, argument: A): Promise<R>
 }
@@ -130,6 +130,7 @@ let providerSubject = 'synthetic-operator'
 let realAssetPath = ''
 let installPaths: string[] = []
 let nativeCookieHeader = ''
+let launchToken = ''
 const issuedCodes = new Map<string, { challenge: string; nonce: string }>()
 
 function required(name: string): string {
@@ -291,6 +292,7 @@ function oidcEnvironment(): NodeJS.ProcessEnv {
     DSH_OIDC_ALLOWED_SUBJECTS: JSON.stringify([{ issuer, subject: 'synthetic-operator' }]),
     // Caddy reaches DSH over loopback in this stack.
     DSH_OIDC_TRUSTED_PROXIES: JSON.stringify(['127.0.0.0/8']),
+    DSH_OIDC_LOCAL_PERSON: 'acceptance-local',
   }
 }
 
@@ -476,7 +478,17 @@ async function waitForOidcRoute(): Promise<void> {
   throw new Error(`OIDC route readiness deadline exceeded\n${dshOutput}`)
 }
 
-function directDsh(path: string, cookie = ''): Promise<{ status: number; body: string }> {
+/**
+ * A request straight to DSH's listener. By default it looks like Caddy's:
+ * the public Host and a client address; `asLocal` drops the address header
+ * and, unless `publicHost` is set, names DSH's own listen address instead.
+ */
+function directDsh(
+  path: string,
+  cookie = '',
+  options: { asLocal?: boolean; publicHost?: boolean } = {},
+): Promise<{ status: number; body: string }> {
+  const publicHost = options.asLocal !== true || options.publicHost === true
   return new Promise((resolve, reject) => {
     const request = httpRequest(
       {
@@ -484,8 +496,8 @@ function directDsh(path: string, cookie = ''): Promise<{ status: number; body: s
         port: dshPort,
         path,
         headers: {
-          Host: `dsh.test:${String(publicPort)}`,
-          'X-Dsh-Oidc-Client-Ip': '127.0.0.1',
+          Host: publicHost ? `dsh.test:${String(publicPort)}` : `127.0.0.1:${String(dshPort)}`,
+          ...(options.asLocal === true ? {} : { 'X-Dsh-Oidc-Client-Ip': '127.0.0.1' }),
           ...(cookie === '' ? {} : { Cookie: cookie }),
         },
         signal: AbortSignal.timeout(2_000),
@@ -499,6 +511,35 @@ function directDsh(path: string, cookie = ''): Promise<{ status: number; body: s
             body: Buffer.concat(chunks).toString('utf8'),
           }),
         )
+      },
+    )
+    request.once('error', reject)
+    request.end()
+  })
+}
+
+/** DSH's own cookie for its loopback listen address, from its launch URL. */
+function localNativeCookie(): Promise<string> {
+  if (launchToken === '') throw new Error('launch token was not captured at sign-in')
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(
+      {
+        host: '127.0.0.1',
+        port: dshPort,
+        path: `/?token=${encodeURIComponent(launchToken)}`,
+        headers: { Host: `127.0.0.1:${String(dshPort)}` },
+        signal: AbortSignal.timeout(2_000),
+      },
+      (response) => {
+        response.resume()
+        const cookie = (response.headers['set-cookie'] ?? [])
+          .map((value) => value.split(';', 1)[0]!)
+          .find((value) => value.startsWith('dsh-auth-'))
+        if (cookie === undefined)
+          reject(
+            new Error(`no native cookie for the loopback address (${String(response.statusCode)})`),
+          )
+        else resolve(cookie)
       },
     )
     request.once('error', reject)
@@ -819,7 +860,13 @@ describe(
       // Provider page -> callback page -> native token exchange -> clean root.
       // Every hop after the provider is a same-site navigation, which is what
       // lets the browser send DSH's SameSite=Strict cookie on the last one.
+      const callback = page.waitForResponse((r) =>
+        r.url().startsWith(`${publicOrigin}/auth/callback`),
+      )
       await page.goto(`${publicOrigin}/auth/login`)
+      const bootstrap = /content="0;url=([^"]+)"/u.exec(await (await callback).text())?.[1]
+      launchToken =
+        new URL(bootstrap?.replaceAll('&amp;', '&') ?? publicOrigin).searchParams.get('token') ?? ''
       await page.waitForURL(`${publicOrigin}/`, { waitUntil: 'domcontentloaded' })
       const root = await page.reload({ waitUntil: 'domcontentloaded' })
       expect(root?.status()).toBe(200)
@@ -941,6 +988,25 @@ describe(
       // DSH's own cookie alone no longer reaches /api: the plugin's guard in
       // connection/request also wants a live OIDC session.
       expect((await directDsh('/api/__acceptance_missing__', nativeCookieHeader)).status).toBe(401)
+      // With localPerson set, a browser on this host that opens DSH by its listen
+      // address gets through as that person, with DSH's cookie for that address,
+      // but a request naming the public host, as Caddy forwards it, does not,
+      // even without the client address header.
+      const localCookie = await localNativeCookie()
+      const local = await directDsh('/api/dsh-oidc/status', localCookie, { asLocal: true })
+      expect(local.status).toBe(200)
+      expect((JSON.parse(local.body) as { localPerson?: string }).localPerson).toBe(
+        'acceptance-local',
+      )
+      expect(
+        (
+          await directDsh('/api/dsh-oidc/status', nativeCookieHeader, {
+            asLocal: true,
+            publicHost: true,
+          })
+        ).status,
+      ).toBe(401)
+      expect((await directDsh('/api/dsh-oidc/status', '', { asLocal: true })).status).toBe(401)
       const outerCookie = allCookies.find((cookie) => cookie.name === '__Host-dsh-oidc-session')
       expect(outerCookie).toBeDefined()
       const bothCookies = `${nativeCookieHeader}; ${outerCookie!.name}=${outerCookie!.value}`
