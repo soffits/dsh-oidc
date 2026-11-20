@@ -291,6 +291,7 @@ function oidcEnvironment(): NodeJS.ProcessEnv {
     DSH_OIDC_ALLOWED_SUBJECTS: JSON.stringify([{ issuer, subject: 'synthetic-operator' }]),
     // Caddy reaches DSH over loopback in this stack.
     DSH_OIDC_TRUSTED_PROXIES: JSON.stringify(['127.0.0.0/8']),
+    DSH_OIDC_LOCAL_PERSON: 'acceptance-local',
   }
 }
 
@@ -476,7 +477,17 @@ async function waitForOidcRoute(): Promise<void> {
   throw new Error(`OIDC route readiness deadline exceeded\n${dshOutput}`)
 }
 
-function directDsh(path: string, cookie = ''): Promise<{ status: number; body: string }> {
+/**
+ * A request straight to DSH's listener. By default it looks like Caddy's:
+ * the public Host and a client address; `asLocal` drops the address header
+ * and, unless `publicHost` is set, names DSH's own listen address instead.
+ */
+function directDsh(
+  path: string,
+  cookie = '',
+  options: { asLocal?: boolean; publicHost?: boolean } = {},
+): Promise<{ status: number; body: string }> {
+  const publicHost = options.asLocal !== true || options.publicHost === true
   return new Promise((resolve, reject) => {
     const request = httpRequest(
       {
@@ -484,8 +495,8 @@ function directDsh(path: string, cookie = ''): Promise<{ status: number; body: s
         port: dshPort,
         path,
         headers: {
-          Host: `dsh.test:${String(publicPort)}`,
-          'X-Dsh-Oidc-Client-Ip': '127.0.0.1',
+          Host: publicHost ? `dsh.test:${String(publicPort)}` : `127.0.0.1:${String(dshPort)}`,
+          ...(options.asLocal === true ? {} : { 'X-Dsh-Oidc-Client-Ip': '127.0.0.1' }),
           ...(cookie === '' ? {} : { Cookie: cookie }),
         },
         signal: AbortSignal.timeout(2_000),
@@ -941,6 +952,23 @@ describe(
       // DSH's own cookie alone no longer reaches /api: the plugin's guard in
       // connection/request also wants a live OIDC session.
       expect((await directDsh('/api/__acceptance_missing__', nativeCookieHeader)).status).toBe(401)
+      // With localPerson set, a browser on this host that opens DSH by its listen
+      // address gets through as that person, but the same request naming the public
+      // host, as Caddy forwards it, does not, even without the client address header.
+      const local = await directDsh('/api/dsh-oidc/status', nativeCookieHeader, { asLocal: true })
+      expect(local.status).toBe(200)
+      expect((JSON.parse(local.body) as { localPerson?: string }).localPerson).toBe(
+        'acceptance-local',
+      )
+      expect(
+        (
+          await directDsh('/api/dsh-oidc/status', nativeCookieHeader, {
+            asLocal: true,
+            publicHost: true,
+          })
+        ).status,
+      ).toBe(401)
+      expect((await directDsh('/api/dsh-oidc/status', '', { asLocal: true })).status).toBe(401)
       const outerCookie = allCookies.find((cookie) => cookie.name === '__Host-dsh-oidc-session')
       expect(outerCookie).toBeDefined()
       const bothCookies = `${nativeCookieHeader}; ${outerCookie!.name}=${outerCookie!.value}`

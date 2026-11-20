@@ -183,7 +183,8 @@ async function serve(
     localPerson === undefined
       ? undefined
       : (req: IncomingMessage) =>
-          isLocalRequest(req) && admission.currentSession(req) === undefined
+          isLocalRequest(req, config.publicOrigin.hostname) &&
+          admission.currentSession(req) === undefined
             ? localIdentity(localPerson)
             : undefined
   if (localPerson !== undefined)

@@ -13,7 +13,7 @@ function request(peer: string | undefined, headers: Record<string, string> = {})
   Object.assign(value, {
     method: 'GET',
     url: '/api/x',
-    headers: { host: 'dsh.example', ...headers },
+    headers: { host: '127.0.0.1:3080', ...headers },
     socket: { remoteAddress: peer },
   })
   return value as IncomingMessage
@@ -32,13 +32,40 @@ describe('local requests', () => {
       '::ffff:10.1.2.3',
       'fd00::5',
     ])
-      expect(isLocalRequest(request(peer), own), peer).toBe(true)
+      expect(isLocalRequest(request(peer), 'dsh.example', own), peer).toBe(true)
     for (const peer of [undefined, '10.1.2.4', '192.0.2.1', '::ffff:192.0.2.1', 'fd00::6'])
-      expect(isLocalRequest(request(peer), own), String(peer)).toBe(false)
+      expect(isLocalRequest(request(peer), 'dsh.example', own), String(peer)).toBe(false)
     // The gateway and a gating proxy set the header, so their requests are never local.
-    expect(isLocalRequest(request('127.0.0.1', { 'x-dsh-oidc-client-ip': '192.0.2.1' }), own)).toBe(
-      false,
-    )
+    expect(
+      isLocalRequest(
+        request('127.0.0.1', { 'x-dsh-oidc-client-ip': '192.0.2.1' }),
+        'dsh.example',
+        own,
+      ),
+    ).toBe(false)
+  })
+
+  it('never counts a request that names the public host, as a same-host proxy forwards it', () => {
+    for (const host of [
+      'dsh.example',
+      'DSH.Example',
+      'dsh.example:443',
+      'dsh.example:8443',
+      'dsh.example.',
+    ])
+      expect(isLocalRequest(request('127.0.0.1', { host }), 'dsh.example', own), host).toBe(false)
+    const missing = request('127.0.0.1')
+    delete missing.headers.host
+    expect(isLocalRequest(missing, 'dsh.example', own)).toBe(false)
+    expect(isLocalRequest(request('127.0.0.1', { host: 'a b' }), 'dsh.example', own)).toBe(false)
+    for (const host of [
+      'localhost:3081',
+      '127.0.0.1',
+      '[::1]:3080',
+      '10.1.2.3:3080',
+      'dsh-internal',
+    ])
+      expect(isLocalRequest(request('127.0.0.1', { host }), 'dsh.example', own), host).toBe(true)
   })
 
   it("reads this host's interface addresses and refreshes them", () => {
@@ -152,6 +179,8 @@ describe('local access through apply()', () => {
     expect(
       await through(request('127.0.0.1', { 'x-dsh-oidc-client-ip': '192.0.2.1' }), handler),
     ).toBe(401)
+    // A proxy on this host that forwards a route past the gate keeps the public Host.
+    expect(await through(request('127.0.0.1', { host: 'dsh.example' }), handler)).toBe(401)
     expect(handler).not.toHaveBeenCalled()
 
     // The Sign-in page's endpoints answer local access too.
