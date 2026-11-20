@@ -91,7 +91,7 @@ interface Page {
   waitForURL(url: string, options?: Record<string, unknown>): Promise<void>
   waitForResponse(
     predicate: (response: { url(): string }) => boolean,
-  ): Promise<{ status(): number }>
+  ): Promise<{ status(): number; text(): Promise<string> }>
   reload(options?: Record<string, unknown>): Promise<{ status(): number } | null>
   evaluate<R, A>(callback: (argument: A) => R | Promise<R>, argument: A): Promise<R>
 }
@@ -130,6 +130,7 @@ let providerSubject = 'synthetic-operator'
 let realAssetPath = ''
 let installPaths: string[] = []
 let nativeCookieHeader = ''
+let launchToken = ''
 const issuedCodes = new Map<string, { challenge: string; nonce: string }>()
 
 function required(name: string): string {
@@ -517,6 +518,35 @@ function directDsh(
   })
 }
 
+/** DSH's own cookie for its loopback listen address, from its launch URL. */
+function localNativeCookie(): Promise<string> {
+  if (launchToken === '') throw new Error('launch token was not captured at sign-in')
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(
+      {
+        host: '127.0.0.1',
+        port: dshPort,
+        path: `/?token=${encodeURIComponent(launchToken)}`,
+        headers: { Host: `127.0.0.1:${String(dshPort)}` },
+        signal: AbortSignal.timeout(2_000),
+      },
+      (response) => {
+        response.resume()
+        const cookie = (response.headers['set-cookie'] ?? [])
+          .map((value) => value.split(';', 1)[0]!)
+          .find((value) => value.startsWith('dsh-auth-'))
+        if (cookie === undefined)
+          reject(
+            new Error(`no native cookie for the loopback address (${String(response.statusCode)})`),
+          )
+        else resolve(cookie)
+      },
+    )
+    request.once('error', reject)
+    request.end()
+  })
+}
+
 function logoutThroughProxy(cookie: string, csrf: string): Promise<number> {
   const body = new URLSearchParams({ csrf }).toString()
   return new Promise((resolve, reject) => {
@@ -830,7 +860,13 @@ describe(
       // Provider page -> callback page -> native token exchange -> clean root.
       // Every hop after the provider is a same-site navigation, which is what
       // lets the browser send DSH's SameSite=Strict cookie on the last one.
+      const callback = page.waitForResponse((r) =>
+        r.url().startsWith(`${publicOrigin}/auth/callback`),
+      )
       await page.goto(`${publicOrigin}/auth/login`)
+      const bootstrap = /content="0;url=([^"]+)"/u.exec(await (await callback).text())?.[1]
+      launchToken =
+        new URL(bootstrap?.replaceAll('&amp;', '&') ?? publicOrigin).searchParams.get('token') ?? ''
       await page.waitForURL(`${publicOrigin}/`, { waitUntil: 'domcontentloaded' })
       const root = await page.reload({ waitUntil: 'domcontentloaded' })
       expect(root?.status()).toBe(200)
@@ -953,9 +989,11 @@ describe(
       // connection/request also wants a live OIDC session.
       expect((await directDsh('/api/__acceptance_missing__', nativeCookieHeader)).status).toBe(401)
       // With localPerson set, a browser on this host that opens DSH by its listen
-      // address gets through as that person, but the same request naming the public
-      // host, as Caddy forwards it, does not, even without the client address header.
-      const local = await directDsh('/api/dsh-oidc/status', nativeCookieHeader, { asLocal: true })
+      // address gets through as that person, with DSH's cookie for that address,
+      // but a request naming the public host, as Caddy forwards it, does not,
+      // even without the client address header.
+      const localCookie = await localNativeCookie()
+      const local = await directDsh('/api/dsh-oidc/status', localCookie, { asLocal: true })
       expect(local.status).toBe(200)
       expect((JSON.parse(local.body) as { localPerson?: string }).localPerson).toBe(
         'acceptance-local',
