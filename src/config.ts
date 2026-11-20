@@ -305,10 +305,12 @@ export function resolveConfig(config: Config): ResolvedConfig {
     throw new Error('dsh-oidc: allowedGroups must not be explicitly empty')
   const allowedSubjects = (config.allowedSubjects ?? []).map(
     ({ issuer: allowedIssuer, subject }) => {
-      exactHttpsUrl(allowedIssuer, 'allowedSubjects.issuer')
-      const exactIssuer = allowedIssuer
+      if (allowedIssuer !== issuerId)
+        throw new Error(
+          `dsh-oidc: allowedSubjects.issuer must be the configured issuer exactly (${JSON.stringify(issuerId)}), not ${JSON.stringify(allowedIssuer)}`,
+        )
       const [exactSubject] = exactStrings([subject], 'allowedSubjects.subject')
-      return `${exactIssuer}\u0000${exactSubject}`
+      return `${issuerId}\u0000${exactSubject}`
     },
   )
   if (new Set(allowedSubjects).size !== allowedSubjects.length)

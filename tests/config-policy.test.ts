@@ -75,6 +75,17 @@ describe('configuration and policy', () => {
       },
       /duplicates/u,
     ],
+    [
+      {
+        ...base,
+        allowedSubjects: [{ issuer: 'https://id.example/application/o/dsh', subject: 'x' }],
+      },
+      /allowedSubjects\.issuer must be the configured issuer/u,
+    ],
+    [
+      { ...base, allowedSubjects: [{ issuer: 'https://other.example/', subject: 'x' }] },
+      /allowedSubjects\.issuer must be the configured issuer/u,
+    ],
     [{ ...base, sessionMaxAgeSeconds: 60, sessionIdleTimeoutSeconds: 61 }, /idle timeout/u],
     [{ ...base, requiredClaims: { department: [] } }, /must not be empty/u],
   ])('rejects invalid config %#', (input, pattern) => {
