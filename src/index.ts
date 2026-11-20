@@ -5,6 +5,7 @@ import type {} from '@deepseek-ai/dsh-credentials'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { readFileSync } from 'node:fs'
 import { OidcAdmission, clientAddress, setGatewayClientIp, wantsNavigation } from './admission.js'
+import { failureReason } from './failure.js'
 import { Gateway, isLoopback } from './gateway.js'
 import { LOCAL_PROVIDER, isLocalRequest, localIdentity } from './local.js'
 import { applyApiGuard } from './api-guard.js'
@@ -95,7 +96,8 @@ export async function apply(ctx: Context, rawConfig: OidcConfig | undefined): Pr
       {
         table: domain.table(SESSION_TABLE),
         policy: policyFingerprint(config),
-        onError: () => sub.logger.warn('dsh-oidc: session store write failed'),
+        onError: (error) =>
+          sub.logger.warn(`dsh-oidc: session store write failed: ${failureReason(error)}`),
       },
       audit.table(AUDIT_TABLE),
     )
@@ -136,7 +138,8 @@ async function serve(
     retentionMilliseconds: config.auditRetentionDays * 86_400_000,
     maxEvents: config.maxAuditEvents,
     ...(auditTable === undefined ? {} : { table: auditTable }),
-    onError: () => ctx.logger.warn('dsh-oidc: audit log write failed'),
+    onError: (error) =>
+      ctx.logger.warn(`dsh-oidc: audit log write failed: ${failureReason(error)}`),
     emit: (event) => {
       ctx.emit(AUDIT_EVENT, event)
     },

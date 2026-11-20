@@ -9,7 +9,12 @@ import {
   type CredentialResolver,
 } from '../src/admission.js'
 import { resolveConfig } from '../src/config.js'
-import type { AuthorizationStart, CallbackChecks, OidcProtocol } from '../src/oidc.js'
+import {
+  OidcValidationError,
+  type AuthorizationStart,
+  type CallbackChecks,
+  type OidcProtocol,
+} from '../src/oidc.js'
 import { SESSION_COOKIE, TRANSACTION_COOKIE } from '../src/state.js'
 
 interface CapturedResponse {
@@ -375,6 +380,48 @@ describe('OIDC route admission', () => {
     await admission.login(request('GET', '/auth/login'), res.value)
     expect(res.captured).toMatchObject({ status: 503, body: 'authentication unavailable\n' })
     expect(protocol.callbackChecks).toBeUndefined()
+    expect(messages.join('\n')).toMatch(
+      /login failed correlation=[0-9a-f]{16} reason=OidcValidationError OIDC_CLIENT_SECRET_UNAVAILABLE$/mu,
+    )
+  })
+
+  it('logs why a callback failed without the error text', async () => {
+    const reasons: Array<[unknown, string]> = [
+      [new OidcValidationError('OIDC_AZP_MISMATCH'), 'OidcValidationError OIDC_AZP_MISMATCH'],
+      [
+        Object.assign(new Error('provider said code=abc token=xyz'), {
+          name: 'ResponseBodyError',
+          code: 'OAUTH_RESPONSE_BODY_ERROR',
+          error: 'invalid_grant',
+          status: 400,
+        }),
+        'ResponseBodyError OAUTH_RESPONSE_BODY_ERROR error=invalid_grant status=400',
+      ],
+      [
+        new TypeError('fetch failed https://id.example/token?code=abc', {
+          cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+        }),
+        'TypeError <- Error ECONNREFUSED',
+      ],
+    ]
+    for (const [error, reason] of reasons) {
+      const { admission, protocol, messages } = harness()
+      protocol.callback = async () => {
+        throw error
+      }
+      const started = await login(admission)
+      const res = response()
+      await admission.callback(
+        request('GET', `/auth/callback?code=abc&state=${started.state}`, {
+          cookie: started.cookie,
+        }),
+        res.value,
+      )
+      expect(res.captured.status).toBe(400)
+      const logged = messages.find((message) => message.includes('callback failed'))
+      expect(logged).toMatch(new RegExp(`correlation=[0-9a-f]{16} reason=${reason}$`, 'u'))
+      expect(logged).not.toMatch(/abc|xyz|fetch failed|provider said/u)
+    }
   })
 
   it('runs one-use authorization and bootstraps the unchanged native DSH connection', async () => {

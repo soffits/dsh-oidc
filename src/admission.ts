@@ -3,8 +3,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { isIP } from 'node:net'
 import type { CredentialRef, ResolvedCredential } from '@deepseek-ai/dsh-credentials'
 import { AuditLog, type AuditPerson } from './audit.js'
+import { failureReason } from './failure.js'
 import type { ResolvedConfig, TrustedProxies } from './config.js'
-import type { OidcProtocol } from './oidc.js'
+import { OidcValidationError, type OidcProtocol } from './oidc.js'
 import { normalizedTarget, targetPath } from './public-paths.js'
 import { authorizeClaims, type Principal } from './policy.js'
 import {
@@ -224,7 +225,8 @@ export class OidcAdmission {
       new AuditLog({
         retentionMilliseconds: config.auditRetentionDays * 86_400_000,
         maxEvents: config.maxAuditEvents,
-        onError: () => logger.warn('dsh-oidc: audit log write failed'),
+        onError: (error) =>
+          logger.warn(`dsh-oidc: audit log write failed: ${failureReason(error)}`),
         emit: () => undefined,
       })
   }
@@ -250,7 +252,7 @@ export class OidcAdmission {
     const reference: CredentialRef | undefined = this.config.clientSecretRef
     if (reference === undefined) return undefined
     const resolved = await this.credentials.resolve(reference)
-    if (resolved === undefined) throw new Error('configured OIDC client credential is unavailable')
+    if (resolved === undefined) throw new OidcValidationError('OIDC_CLIENT_SECRET_UNAVAILABLE')
     return resolved.value
   }
 
@@ -272,8 +274,10 @@ export class OidcAdmission {
         secureCookie(TRANSACTION_COOKIE, transaction.id, this.config.transactionMaxAgeSeconds),
       ])
       this.logger.info(`dsh-oidc login started correlation=${correlation}`)
-    } catch {
-      this.logger.warn(`dsh-oidc login failed correlation=${correlation}`)
+    } catch (error) {
+      this.logger.warn(
+        `dsh-oidc login failed correlation=${correlation} reason=${failureReason(error)}`,
+      )
       plain(res, 503, 'authentication unavailable\n')
     }
   }
@@ -351,8 +355,10 @@ export class OidcAdmission {
         expiredCookie(TRANSACTION_COOKIE),
       ])
       this.logger.info(`dsh-oidc login admitted correlation=${correlation}`)
-    } catch {
-      this.logger.warn(`dsh-oidc callback failed correlation=${correlation}`)
+    } catch (error) {
+      this.logger.warn(
+        `dsh-oidc callback failed correlation=${correlation} reason=${failureReason(error)}`,
+      )
       plain(res, 400, 'invalid authentication response\n')
     }
   }
