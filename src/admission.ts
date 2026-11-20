@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { isIP } from 'node:net'
 import type { CredentialRef, ResolvedCredential } from '@deepseek-ai/dsh-credentials'
@@ -161,7 +161,12 @@ function formBody(req: IncomingMessage, maximum = 16_384): Promise<URLSearchPara
   })
 }
 
-const SIGNIN_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Sign in · DSH</title><style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#111;color:#eee}main{text-align:center;padding:2rem}a{display:inline-block;margin-top:1rem;padding:.6rem 1.4rem;background:#2563eb;color:#fff;border-radius:.5rem;text-decoration:none;font-weight:600}</style></head><body><main><h1>DSH</h1><p>Authentication required.</p><a href="/auth/login?nav=1" rel="nofollow">Sign in</a></main></body></html>`
+const SIGNIN_STYLE =
+  'body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#111;color:#eee}main{text-align:center;padding:2rem}a{display:inline-block;margin-top:1rem;padding:.6rem 1.4rem;background:#2563eb;color:#fff;border-radius:.5rem;text-decoration:none;font-weight:600}'
+
+const SIGNIN_CSP = `default-src 'none'; style-src 'sha256-${createHash('sha256').update(SIGNIN_STYLE).digest('base64')}'; base-uri 'none'; frame-ancestors 'none'`
+
+const SIGNIN_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Sign in · DSH</title><style>${SIGNIN_STYLE}</style></head><body><main><h1>DSH</h1><p>Authentication required.</p><a href="/auth/login?nav=1" rel="nofollow">Sign in</a></main></body></html>`
 
 export function wantsNavigation(req: IncomingMessage): boolean {
   const fetchMode = header(req, 'sec-fetch-mode')
@@ -358,8 +363,7 @@ export class OidcAdmission {
     res.writeHead(200, {
       ...SECURITY_HEADERS,
       'content-type': 'text/html; charset=utf-8',
-      'content-security-policy':
-        "default-src 'none'; style 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+      'content-security-policy': SIGNIN_CSP,
     })
     res.end(req.method === 'HEAD' ? undefined : SIGNIN_HTML)
   }

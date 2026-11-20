@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -183,6 +184,29 @@ describe('OIDC route admission', () => {
     const method = response()
     admission.signin(request('POST', '/auth/signin'), method.value)
     expect(method.captured).toMatchObject({ status: 405, headers: { allow: 'GET, HEAD' } })
+  })
+
+  it("lets the sign-in page's own style through its CSP and nothing else", () => {
+    const { admission } = harness()
+    const page = response()
+    admission.signin(request('GET', '/auth/signin'), page.value)
+    const policy = new Map(
+      String(page.captured.headers?.['content-security-policy'])
+        .split(';')
+        .map((directive) => directive.trim().split(/\s+/u))
+        .map(([name, ...values]) => [name!, values]),
+    )
+    expect([...policy.keys()].sort()).toEqual([
+      'base-uri',
+      'default-src',
+      'frame-ancestors',
+      'style-src',
+    ])
+    expect(policy.get('default-src')).toEqual(["'none'"])
+    const styles = [...String(page.captured.body).matchAll(/<style>([^<]*)<\/style>/gu)]
+    expect(styles).toHaveLength(1)
+    const digest = createHash('sha256').update(styles[0]![1]!).digest('base64')
+    expect(policy.get('style-src')).toEqual([`'sha256-${digest}'`])
   })
 
   it('sends signed-out navigations straight to the provider with directLogin', async () => {
