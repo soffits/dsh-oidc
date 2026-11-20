@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0-alpha.15
+
+- The bundled sign-in page is styled again: its CSP named a `style` directive that browsers ignore, so `default-src 'none'` blocked the page's own `<style>`. It now allows exactly that style block by its hash.
+- Failed sign-ins and store writes log why, next to the correlation id: each error's name, stable code, OAuth `error` and HTTP status along its cause chain (for example `OidcValidationError OIDC_AZP_MISMATCH`, `ResponseBodyError OAUTH_RESPONSE_BODY_ERROR error=invalid_grant status=400`, `TypeError <- Error ECONNREFUSED`), never error messages, URLs or tokens. A missing client secret is `OIDC_CLIENT_SECRET_UNAVAILABLE`.
+- `localPerson` no longer takes a request whose `Host` is the public host name for local, so a route on a same-host proxy that skips the gate can't reach `/api` as the local person. A browser on the DSH host keeps working when it opens DSH by its listen address; the Caddy, Traefik and nginx examples forward the public `Host` and are unaffected. The real-stack acceptance run now sets `localPerson` and checks both sides.
+- An `allowedSubjects` entry whose `issuer` isn't exactly the configured `issuer` (a trailing slash, another provider) now stops the plugin at startup instead of silently refusing everyone.
+- A logout whose client disconnects mid-body gets an answer instead of a request left waiting.
+
 ## 0.3.0-alpha.14
 
 - The Web UI can be installed as an app again behind the gate. Browsers fetch the web app manifest and icons without cookies (WebKit always does for the `apple-touch-icon`), so they got 401 and iPhone's Add to Home Screen and Android's install broke. A GET or HEAD of a path in the new `publicPaths` (`DSH_OIDC_PUBLIC_PATHS`) now needs no session, in both modes. The default is DSH's `/manifest.webmanifest`, the icons it lists and `/apple-touch-icon.png`; entries must be exact static manifest or image file paths outside `/api`, `/plugins`, `/auth`, `/connect` and `/_dsh-oidc`, and `[]` turns it off. With forward-auth, `/auth/check` reads `X-Forwarded-Method` and `X-Forwarded-Uri` from a trusted proxy only; the nginx example now sets them, and the Traefik example trusts loopback forwarded headers on its check hop.
