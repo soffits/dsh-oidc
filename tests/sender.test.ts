@@ -5,6 +5,7 @@ import * as connectionPlugin from '@deepseek-ai/dsh-client-connection'
 import { WebServer } from '@deepseek-ai/dsh-host-webserver'
 import type { Principal } from '../src/policy.js'
 import {
+  MAX_PARKED_SENDERS,
   MAX_PENDING_SENDERS,
   applySenderContext,
   isWebPrompt,
@@ -279,6 +280,59 @@ describe('sender context listeners', () => {
     })
     ctx.emit('agent/inbox/discarded', { message: discarded })
     expect(entered(await step(ctx, [failed, discarded]))).toEqual([failed, discarded])
+  })
+
+  it('keeps the sender when a queued prompt is steered back into the inbox', async () => {
+    const ctx = host()
+    const prompt = webPrompt()
+    await apiRequest(ctx, `${SESSION_COOKIE}=token-alice`, async () => {
+      ctx.emit('agent/inbox/inserted', { message: prompt })
+    })
+    // The queue's steer action: remove the waiting prompt, then insert the same message,
+    // from a context with no session of its own.
+    ctx.emit('agent/inbox/discarded', { message: prompt })
+    ctx.emit('agent/inbox/inserted', { message: prompt })
+    expect(entered(await step(ctx, [prompt])).map(taggedAs)).toEqual([`alice@${String(NOW)}`])
+  })
+
+  it('keeps the first sender when someone else steers or edits the prompt', async () => {
+    const ctx = host()
+    const prompt = webPrompt()
+    await apiRequest(ctx, `${SESSION_COOKIE}=token-alice`, async () => {
+      ctx.emit('agent/inbox/inserted', { message: prompt })
+    })
+    ctx.emit('agent/inbox/discarded', { message: prompt })
+    await apiRequest(ctx, `${SESSION_COOKIE}=token-bob`, async () => {
+      ctx.emit('agent/inbox/inserted', { message: prompt })
+    })
+    // A second insert while it is still waiting changes nothing either.
+    await apiRequest(ctx, `${SESSION_COOKIE}=token-bob`, async () => {
+      ctx.emit('agent/inbox/inserted', { message: prompt })
+    })
+    expect(entered(await step(ctx, [prompt])).map(taggedAs)).toEqual([`alice@${String(NOW)}`])
+  })
+
+  it('drops a removed prompt that never comes back, within a bound', async () => {
+    const ctx = host()
+    const removed: SenderMessage[] = []
+    for (let index = 0; index <= MAX_PARKED_SENDERS; index += 1) {
+      const prompt = webPrompt()
+      removed.push(prompt)
+      await apiRequest(ctx, `${SESSION_COOKIE}=token-alice`, async () => {
+        ctx.emit('agent/inbox/inserted', { message: prompt })
+      })
+      ctx.emit('agent/inbox/discarded', { message: prompt })
+    }
+    // The oldest parked prompt was dropped, so its return is untagged; the newest keeps its sender.
+    const [oldest] = removed
+    const newest = removed[removed.length - 1]
+    if (oldest === undefined || newest === undefined) throw new Error('no prompts')
+    ctx.emit('agent/inbox/inserted', { message: oldest })
+    ctx.emit('agent/inbox/inserted', { message: newest })
+    expect(entered(await step(ctx, [oldest, newest])).map(taggedAs)).toEqual([
+      '',
+      `alice@${String(NOW)}`,
+    ])
   })
 
   it('passes rejected steps through and bounds what it remembers', async () => {

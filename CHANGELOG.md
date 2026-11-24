@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0-alpha.16
+
+- A Web message that waits in the queue and is then steered into the running turn (or edited) keeps its sender. DSH takes the waiting message out of the inbox and puts the same message back from a context with no sign-in, and the plugin had forgotten the sender on the way out, so the message reached the model with no principal and no sender notice. A prompt that leaves the inbox is now held for a short while and gets its first sender back when the same message returns; someone else steering or editing it doesn't change who wrote it.
+
 ## 0.3.0-alpha.15
 
 - The bundled sign-in page is styled again: its CSP named a `style` directive that browsers ignore, so `default-src 'none'` blocked the page's own `<style>`. It now allows exactly that style block by its hash.
