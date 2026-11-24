@@ -25,6 +25,12 @@ import type { Principal } from './policy.js'
  *    never changed; a renderer such as dsh-message-context shows the model
  *    who wrote it.
  *
+ * The queue's steer and edit actions take a waiting prompt out of the inbox and
+ * put the same message back, from a request that may belong to no session or to
+ * someone else. A prompt that leaves the inbox is therefore parked for a short
+ * while, and a message that comes back by its id gets its first sender again;
+ * a parked prompt nothing returns is dropped, never tagged.
+ *
  * A scope closes when its request settles and after its first claim. Work the
  * request merely started (an agent turn, a subagent, a timer) inherits the
  * AsyncLocalStorage store but finds it closed, so Telegram, scheduled jobs and
@@ -35,6 +41,8 @@ const MAX_LABEL_LENGTH = 64
 const MAX_SUBJECT_LENGTH = 255
 /** Remembered prompts waiting for their step; the oldest go first past this. */
 export const MAX_PENDING_SENDERS = 1_024
+/** Prompts taken out of an inbox that may go straight back in (a queue edit or steer). */
+export const MAX_PARKED_SENDERS = 64
 
 /** The parts of a DSH message this plugin reads or writes. */
 export interface SenderMessage {
@@ -212,6 +220,7 @@ export function applySenderContext(
 ): void {
   const requests = new AsyncLocalStorage<RequestScope>()
   const pending = new Map<string, PendingPrompt>()
+  const parked = new Map<string, PendingPrompt>()
   const now = options.now ?? Date.now
 
   events.on('connection/request', async (request, _response, next) => {
@@ -225,21 +234,39 @@ export function applySenderContext(
     }
   })
 
-  events.on('agent/inbox/inserted', ({ message }) => {
-    const scope = requests.getStore()
-    if (scope?.open !== true || !isWebPrompt(message)) return
-    // One prompt per request: whatever this request goes on to start is not its prompt.
-    scope.open = false
-    pending.delete(message.id)
-    pending.set(message.id, { sender: scope.sender, sentAt: now() })
+  const remember = (id: string, prompt: PendingPrompt): void => {
+    pending.delete(id)
+    pending.set(id, prompt)
     if (pending.size > MAX_PENDING_SENDERS) {
       const oldest = pending.keys().next().value
       if (oldest !== undefined) pending.delete(oldest)
     }
+  }
+
+  events.on('agent/inbox/inserted', ({ message }) => {
+    const returning = parked.get(message.id)
+    if (returning !== undefined) {
+      parked.delete(message.id)
+      remember(message.id, returning)
+      return
+    }
+    if (pending.has(message.id)) return
+    const scope = requests.getStore()
+    if (scope?.open !== true || !isWebPrompt(message)) return
+    // One prompt per request: whatever this request goes on to start is not its prompt.
+    scope.open = false
+    remember(message.id, { sender: scope.sender, sentAt: now() })
   })
 
   events.on('agent/inbox/discarded', ({ message }) => {
+    const prompt = pending.get(message.id)
+    if (prompt === undefined) return
     pending.delete(message.id)
+    parked.set(message.id, prompt)
+    if (parked.size > MAX_PARKED_SENDERS) {
+      const oldest = parked.keys().next().value
+      if (oldest !== undefined) parked.delete(oldest)
+    }
   })
 
   events.on('agent/pre-step', async (_payload, next) => {
